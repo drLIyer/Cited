@@ -10,7 +10,7 @@ from dataclasses import dataclass
 
 import httpx
 
-log = logging.getLogger("pulsebot-mcp.fetcher")
+log = logging.getLogger("cited.fetcher")
 
 CACHE_TTL = 3600  # 1 hour
 

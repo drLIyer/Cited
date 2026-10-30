@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pulsebot MCP Server — Substack Newsletter RAG
+Cited — Precise, sourced answers from any Substack newsletter via MCP.
 
 Exposes three tools to any MCP-capable Claude client
 (Claude Desktop, Claude Code, Claude Cowork):
@@ -12,9 +12,9 @@ Exposes three tools to any MCP-capable Claude client
 Usage — Claude Code (~/.claude/settings.json):
 
   "mcpServers": {
-    "pulsebot": {
-      "command": "/Users/liyer_1/pulsebot-mcp/.venv/bin/python3",
-      "args": ["/Users/liyer_1/pulsebot-mcp/server.py"]
+    "cited": {
+      "command": "/Users/liyer_1/cited/.venv/bin/python3",
+      "args": ["/Users/liyer_1/cited/server.py"]
     }
   }
 
@@ -38,16 +38,16 @@ import pipeline as _pipeline
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                     format="%(levelname)s [%(name)s] %(message)s")
-log = logging.getLogger("pulsebot-mcp")
+log = logging.getLogger("cited")
 
 mcp = MCPServer(
-    "Glean",
+    "Cited",
     instructions=(
-        "Pulsebot gives Claude access to Substack newsletter content. "
+        "Cited gives Claude precise, sourced answers from any Substack newsletter. "
         "When a user pastes a Substack URL and asks a question, call search_substack "
-        "with that URL and the question. Use the returned excerpts to compose your answer, "
-        "citing article titles. If confidence is low (< 0.5), say so and recommend "
-        "the reader verify with the original source."
+        "with that URL and the question. Compose your answer using the returned excerpts, "
+        "citing article titles for every claim. If confidence is low (< 0.5), say so and "
+        "remind the reader to verify with the original source."
     ),
 )
 

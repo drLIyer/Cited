@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Glean MCP — one-shot installer
+# Cited MCP — one-shot installer
 # Sets up a virtualenv and registers the server with Claude Code + Claude Desktop.
 
 set -euo pipefail
@@ -9,7 +9,7 @@ VENV="$DIR/.venv"
 PYTHON="$VENV/bin/python3"
 SERVER="$DIR/server.py"
 
-echo "=== Glean MCP installer ==="
+echo "=== Cited MCP installer ==="
 echo "Directory: $DIR"
 echo ""
 
@@ -34,7 +34,7 @@ echo ""
 CONFIG_BLOCK=$(cat <<JSONBLOCK
 {
   "mcpServers": {
-    "glean": {
+    "cited": {
       "command": "$PYTHON",
       "args": ["$SERVER"],
       "env": {
@@ -58,20 +58,20 @@ import json
 path = "$CLAUDE_CODE_SETTINGS"
 with open(path) as f:
     cfg = json.load(f)
-cfg.setdefault("mcpServers", {})["glean"] = {
+cfg.setdefault("mcpServers", {})["cited"] = {
     "command": "$PYTHON",
     "args": ["$SERVER"],
     "env": {"ANTHROPIC_API_KEY": "<your-key-here>"}
 }
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
-print("  Added glean to $CLAUDE_CODE_SETTINGS")
+print("  Added cited to $CLAUDE_CODE_SETTINGS")
 PYEOF
   else
     echo "  mcpServers already exists in $CLAUDE_CODE_SETTINGS"
     echo "  Manually add this block under 'mcpServers':"
     echo ""
-    echo '    "glean": {'
+    echo '    "cited": {'
     echo "      \"command\": \"$PYTHON\","
     echo "      \"args\": [\"$SERVER\"],"
     echo '      "env": {"ANTHROPIC_API_KEY": "<your-key-here>"}'
@@ -81,7 +81,7 @@ else
   echo "  $CLAUDE_CODE_SETTINGS not found — creating it."
   python3 -c "
 import json
-cfg = {'mcpServers': {'glean': {'command': '$PYTHON', 'args': ['$SERVER'], 'env': {'ANTHROPIC_API_KEY': '<your-key-here>'}}}}
+cfg = {'mcpServers': {'cited': {'command': '$PYTHON', 'args': ['$SERVER'], 'env': {'ANTHROPIC_API_KEY': '<your-key-here>'}}}}
 open('$CLAUDE_CODE_SETTINGS','w').write(json.dumps(cfg, indent=2))
 "
   echo "  Created $CLAUDE_CODE_SETTINGS"
@@ -101,19 +101,19 @@ import json
 path = "$DESKTOP_CFG"
 with open(path) as f:
     cfg = json.load(f)
-cfg.setdefault("mcpServers", {})["glean"] = {
+cfg.setdefault("mcpServers", {})["cited"] = {
     "command": "$PYTHON",
     "args": ["$SERVER"],
     "env": {"ANTHROPIC_API_KEY": "<your-key-here>"}
 }
 with open(path, "w") as f:
     json.dump(cfg, f, indent=2)
-print("  Added glean to Claude Desktop config.")
+print("  Added cited to Claude Desktop config.")
 PYEOF
   else
     python3 -c "
 import json
-cfg = {'mcpServers': {'glean': {'command': '$PYTHON', 'args': ['$SERVER'], 'env': {'ANTHROPIC_API_KEY': '<your-key-here>'}}}}
+cfg = {'mcpServers': {'cited': {'command': '$PYTHON', 'args': ['$SERVER'], 'env': {'ANTHROPIC_API_KEY': '<your-key-here>'}}}}
 open('$DESKTOP_CFG','w').write(json.dumps(cfg, indent=2))
 "
     echo "  Created $DESKTOP_CFG"

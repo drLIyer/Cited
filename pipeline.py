@@ -13,7 +13,7 @@ import numpy as np
 
 from fetcher import Post
 
-log = logging.getLogger("pulsebot-mcp.pipeline")
+log = logging.getLogger("cited.pipeline")
 
 CHUNK_WORDS    = 300
 CHUNK_OVERLAP  = 50
