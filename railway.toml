@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python server.py"
+healthcheckPath = "/mcp"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+
+[[services]]
+name = "cited"

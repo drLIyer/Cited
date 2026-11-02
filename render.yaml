@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: cited
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /mcp
+    envVars:
+      - key: CITED_TRANSPORT
+        value: http
+      - key: ANTHROPIC_API_KEY
+        sync: false   # set manually in Render dashboard
+      - key: PORT
+        generateValue: false

@@ -232,68 +232,91 @@ if os.getenv("ANTHROPIC_API_KEY"):
             return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
-# ── Tool 4: get_history ────────────────────────────────────────────────────────
+# ── Tool 4 & 5: history tools (local-only — not registered in HTTP mode) ───────
+# In HTTP mode the server is shared; history is per-user private state that
+# doesn't belong in a shared SQLite. These tools only register when running
+# locally via stdio.
 
-@mcp.tool()
-async def get_history(url: Optional[str] = None, limit: int = 20) -> str:
-    """
-    Retrieve your past questions and answers from Cited across all sessions.
+_HTTP_MODE = os.getenv("CITED_TRANSPORT", "stdio") == "http"
 
-    Returns Q&As saved from previous search_substack and ask_substack calls,
-    newest first. Use this at the start of a session to resume prior research
-    without repeating searches you've already done.
+if not _HTTP_MODE:
 
-    Args:
-        url:   Filter to one newsletter (e.g. https://aakashgupta.substack.com).
-               Omit to see history across all newsletters.
-        limit: Max number of entries to return (default 20).
-    """
-    rows = _history.get(url=url, limit=min(int(limit), 100))
-    if not rows:
-        msg = "No history yet."
-        if url:
-            msg = f"No history for {url} yet."
-        return msg
+    @mcp.tool()
+    async def get_history(url: Optional[str] = None, limit: int = 20) -> str:
+        """
+        Retrieve your past questions and answers from Cited across all sessions.
 
-    lines = [f"{len(rows)} past Q&As" + (f" for {url}" if url else "") + ":\n"]
-    for r in rows:
-        sources_str = ", ".join(s.get("title", "") for s in r["sources"][:3])
-        lines.append(
-            f"[{r['date']}] {r['subdomain']}.substack.com\n"
-            f"  Q: {r['question']}\n"
-            f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
-            f"  Sources: {sources_str or 'none'}\n"
-            f"  Confidence: {r['confidence']:.0%}\n"
-        )
-    return "\n".join(lines)
+        Returns Q&As saved from previous search_substack and ask_substack calls,
+        newest first. Use this at the start of a session to resume prior research
+        without repeating searches you've already done.
 
+        Args:
+            url:   Filter to one newsletter (e.g. https://aakashgupta.substack.com).
+                   Omit to see history across all newsletters.
+            limit: Max number of entries to return (default 20).
+        """
+        rows = _history.get(url=url, limit=min(int(limit), 100))
+        if not rows:
+            msg = "No history yet."
+            if url:
+                msg = f"No history for {url} yet."
+            return msg
 
-@mcp.tool()
-async def search_my_history(query: str) -> str:
-    """
-    Search your Cited history by keyword across all past questions and answers.
+        lines = [f"{len(rows)} past Q&As" + (f" for {url}" if url else "") + ":\n"]
+        for r in rows:
+            sources_str = ", ".join(s.get("title", "") for s in r["sources"][:3])
+            lines.append(
+                f"[{r['date']}] {r['subdomain']}.substack.com\n"
+                f"  Q: {r['question']}\n"
+                f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+                f"  Sources: {sources_str or 'none'}\n"
+                f"  Confidence: {r['confidence']:.0%}\n"
+            )
+        return "\n".join(lines)
 
-    Useful when you remember asking about a topic but can't recall which
-    newsletter or session it was in.
+    @mcp.tool()
+    async def search_my_history(query: str) -> str:
+        """
+        Search your Cited history by keyword across all past questions and answers.
 
-    Args:
-        query: Keyword or phrase to search for in past questions and answers.
-    """
-    rows = _history.keyword_search(query, limit=10)
-    if not rows:
-        return f"No history found matching '{query}'."
+        Useful when you remember asking about a topic but can't recall which
+        newsletter or session it was in.
 
-    lines = [f"{len(rows)} result(s) for '{query}':\n"]
-    for r in rows:
-        lines.append(
-            f"[{r['date']}] {r['subdomain']}.substack.com\n"
-            f"  Q: {r['question']}\n"
-            f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
-        )
-    return "\n".join(lines)
+        Args:
+            query: Keyword or phrase to search for in past questions and answers.
+        """
+        rows = _history.keyword_search(query, limit=10)
+        if not rows:
+            return f"No history found matching '{query}'."
+
+        lines = [f"{len(rows)} result(s) for '{query}':\n"]
+        for r in rows:
+            lines.append(
+                f"[{r['date']}] {r['subdomain']}.substack.com\n"
+                f"  Q: {r['question']}\n"
+                f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+            )
+        return "\n".join(lines)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
+#
+# CITED_TRANSPORT=stdio (default) — local MCP for Claude Code / Claude Desktop
+# CITED_TRANSPORT=http           — hosted MCP for claude.ai Integrations
+#
+# When hosted, set PORT (default 8000) and ANTHROPIC_API_KEY as env vars.
+# Users connect by pasting the server URL into claude.ai → Settings → Integrations.
 
 if __name__ == "__main__":
-    asyncio.run(mcp.run_stdio_async())
+    transport = os.getenv("CITED_TRANSPORT", "stdio")
+    if transport == "http":
+        port = int(os.getenv("PORT", "8000"))
+        log.info("Starting Cited HTTP server on port %d (path /mcp)", port)
+        asyncio.run(mcp.run_streamable_http_async(
+            host="0.0.0.0",
+            port=port,
+            streamable_http_path="/mcp",
+            stateless_http=True,
+        ))
+    else:
+        asyncio.run(mcp.run_stdio_async())
