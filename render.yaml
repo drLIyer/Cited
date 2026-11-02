@@ -8,7 +8,9 @@ services:
     envVars:
       - key: CITED_TRANSPORT
         value: http
-      - key: ANTHROPIC_API_KEY
-        sync: false   # set manually in Render dashboard
+      - key: CITED_ADMIN_TOKEN
+        sync: false   # set manually — enables admin_get_history tool
+      # ANTHROPIC_API_KEY is NOT required. ask_substack is disabled in HTTP mode;
+      # Claude in the user's chat handles synthesis from search_substack excerpts.
       - key: PORT
         generateValue: false

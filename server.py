@@ -160,7 +160,10 @@ async def list_posts(url: str) -> str:
 
 # ── Tool 3: ask_substack (only when API key is present) ────────────────────────
 
-if os.getenv("ANTHROPIC_API_KEY"):
+# ask_substack calls Haiku server-side — only available in local/stdio mode so
+# remote users never consume the deployer's API credits. In HTTP mode, Claude
+# in the user's chat synthesizes the answer from search_substack excerpts instead.
+if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
 
     @mcp.tool()
     async def ask_substack(url: str, question: str) -> str:
