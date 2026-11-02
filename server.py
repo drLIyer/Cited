@@ -232,12 +232,23 @@ if os.getenv("ANTHROPIC_API_KEY"):
             return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
-# ── Tool 4 & 5: history tools (local-only — not registered in HTTP mode) ───────
-# In HTTP mode the server is shared; history is per-user private state that
-# doesn't belong in a shared SQLite. These tools only register when running
-# locally via stdio.
+# ── Tool 4 & 5: history tools ──────────────────────────────────────────────────
+# Local (stdio): get_history and search_my_history are open — it's your own machine.
+# Remote (http): all queries are saved, but only an admin with CITED_ADMIN_TOKEN
+#   can retrieve them via admin_get_history. Regular users see no history tools.
 
 _HTTP_MODE = os.getenv("CITED_TRANSPORT", "stdio") == "http"
+_ADMIN_TOKEN = os.getenv("CITED_ADMIN_TOKEN", "")
+
+
+def _check_admin(token: str) -> Optional[str]:
+    """Return an error string if the token is wrong, None if it's correct."""
+    if not _ADMIN_TOKEN:
+        return "CITED_ADMIN_TOKEN is not set on the server. Set it as an env var to enable admin history access."
+    if token != _ADMIN_TOKEN:
+        return "Invalid admin token."
+    return None
+
 
 if not _HTTP_MODE:
 
@@ -257,10 +268,7 @@ if not _HTTP_MODE:
         """
         rows = _history.get(url=url, limit=min(int(limit), 100))
         if not rows:
-            msg = "No history yet."
-            if url:
-                msg = f"No history for {url} yet."
-            return msg
+            return f"No history for {url} yet." if url else "No history yet."
 
         lines = [f"{len(rows)} past Q&As" + (f" for {url}" if url else "") + ":\n"]
         for r in rows:
@@ -295,6 +303,54 @@ if not _HTTP_MODE:
                 f"[{r['date']}] {r['subdomain']}.substack.com\n"
                 f"  Q: {r['question']}\n"
                 f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+            )
+        return "\n".join(lines)
+
+else:
+    # ── Admin-only history tool (HTTP mode) ────────────────────────────────────
+    # Queries from all users are saved automatically; only the admin can read them.
+    # Set CITED_ADMIN_TOKEN on the server and pass it here to authenticate.
+
+    @mcp.tool()
+    async def admin_get_history(
+        admin_token: str,
+        url: Optional[str] = None,
+        limit: int = 50,
+        query: Optional[str] = None,
+    ) -> str:
+        """
+        [ADMIN ONLY] View all queries made to this Cited server across all users.
+
+        Requires the CITED_ADMIN_TOKEN set on the server. Every search_substack
+        and ask_substack call is logged; this tool retrieves that log.
+
+        Args:
+            admin_token: The server's admin token (set via CITED_ADMIN_TOKEN env var).
+            url:         Filter to one newsletter URL (optional).
+            limit:       Max rows to return (default 50, max 500).
+            query:       Keyword filter across questions and answers (optional).
+        """
+        err = _check_admin(admin_token)
+        if err:
+            return f"Access denied: {err}"
+
+        limit = min(int(limit), 500)
+        if query:
+            rows = _history.keyword_search(query, limit=limit)
+        else:
+            rows = _history.get(url=url, limit=limit)
+
+        if not rows:
+            return "No history found."
+
+        lines = [f"{len(rows)} entries" + (f" matching '{query}'" if query else "") + ":\n"]
+        for r in rows:
+            sources_str = ", ".join(s.get("title", "") for s in r["sources"][:3])
+            lines.append(
+                f"[{r['date']}] {r['subdomain']}.substack.com\n"
+                f"  Q: {r['question']}\n"
+                f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+                f"  Sources: {sources_str or 'none'} | Confidence: {r['confidence']:.0%}\n"
             )
         return "\n".join(lines)
 
