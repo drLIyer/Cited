@@ -30,11 +30,13 @@ import json
 import logging
 import os
 import sys
+from typing import Optional
 
 from mcp.server.mcpserver import MCPServer
 
 import fetcher as _fetcher
 import pipeline as _pipeline
+import history as _history
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                     format="%(levelname)s [%(name)s] %(message)s")
@@ -107,6 +109,10 @@ async def search_substack(url: str, query: str, top_k: int = 5) -> str:
                 f"Retrieval confidence is {confidence:.0%} — the newsletter may not "
                 "cover this topic well. Remind the reader to verify with original sources."
             )
+
+        # Save to history — store top excerpt as the answer so it's retrievable
+        top_excerpt = hits[0]["text"] if hits else ""
+        _history.save(url, query, top_excerpt, result["results"], confidence, tool="search")
 
         return json.dumps(result, indent=2)
 
@@ -204,14 +210,18 @@ if os.getenv("ANTHROPIC_API_KEY"):
             )
             answer = msg.content[0].text
 
-            return json.dumps({
+            result = {
                 "question":       question,
                 "answer":         answer,
                 "confidence":     round(confidence, 3),
                 "low_confidence": confidence < 0.5,
                 "sources":        sources,
                 "posts_indexed":  len(posts),
-            }, indent=2)
+            }
+
+            _history.save(url, question, answer, sources, confidence, tool="ask")
+
+            return json.dumps(result, indent=2)
 
         except _fetcher.NotSubstackError as exc:
             return json.dumps({"error": str(exc)})
@@ -220,6 +230,67 @@ if os.getenv("ANTHROPIC_API_KEY"):
         except Exception as exc:
             log.exception("ask_substack error")
             return json.dumps({"error": f"Unexpected error: {exc}"})
+
+
+# ── Tool 4: get_history ────────────────────────────────────────────────────────
+
+@mcp.tool()
+async def get_history(url: Optional[str] = None, limit: int = 20) -> str:
+    """
+    Retrieve your past questions and answers from Cited across all sessions.
+
+    Returns Q&As saved from previous search_substack and ask_substack calls,
+    newest first. Use this at the start of a session to resume prior research
+    without repeating searches you've already done.
+
+    Args:
+        url:   Filter to one newsletter (e.g. https://aakashgupta.substack.com).
+               Omit to see history across all newsletters.
+        limit: Max number of entries to return (default 20).
+    """
+    rows = _history.get(url=url, limit=min(int(limit), 100))
+    if not rows:
+        msg = "No history yet."
+        if url:
+            msg = f"No history for {url} yet."
+        return msg
+
+    lines = [f"{len(rows)} past Q&As" + (f" for {url}" if url else "") + ":\n"]
+    for r in rows:
+        sources_str = ", ".join(s.get("title", "") for s in r["sources"][:3])
+        lines.append(
+            f"[{r['date']}] {r['subdomain']}.substack.com\n"
+            f"  Q: {r['question']}\n"
+            f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+            f"  Sources: {sources_str or 'none'}\n"
+            f"  Confidence: {r['confidence']:.0%}\n"
+        )
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def search_my_history(query: str) -> str:
+    """
+    Search your Cited history by keyword across all past questions and answers.
+
+    Useful when you remember asking about a topic but can't recall which
+    newsletter or session it was in.
+
+    Args:
+        query: Keyword or phrase to search for in past questions and answers.
+    """
+    rows = _history.keyword_search(query, limit=10)
+    if not rows:
+        return f"No history found matching '{query}'."
+
+    lines = [f"{len(rows)} result(s) for '{query}':\n"]
+    for r in rows:
+        lines.append(
+            f"[{r['date']}] {r['subdomain']}.substack.com\n"
+            f"  Q: {r['question']}\n"
+            f"  A: {r['answer'][:300].strip()}{'…' if len(r['answer']) > 300 else ''}\n"
+        )
+    return "\n".join(lines)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
