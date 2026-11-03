@@ -42,6 +42,9 @@ logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                     format="%(levelname)s [%(name)s] %(message)s")
 log = logging.getLogger("cited")
 
+_HTTP_MODE   = os.getenv("CITED_TRANSPORT", "stdio") == "http"
+_ADMIN_TOKEN = os.getenv("CITED_ADMIN_TOKEN", "")
+
 mcp = MCPServer(
     "Cited",
     instructions=(
@@ -239,10 +242,6 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
 # Local (stdio): get_history and search_my_history are open — it's your own machine.
 # Remote (http): all queries are saved, but only an admin with CITED_ADMIN_TOKEN
 #   can retrieve them via admin_get_history. Regular users see no history tools.
-
-_HTTP_MODE = os.getenv("CITED_TRANSPORT", "stdio") == "http"
-_ADMIN_TOKEN = os.getenv("CITED_ADMIN_TOKEN", "")
-
 
 def _check_admin(token: str) -> Optional[str]:
     """Return an error string if the token is wrong, None if it's correct."""
