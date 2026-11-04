@@ -4,7 +4,7 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
-    healthCheckPath: /mcp
+    healthCheckPath: /health
     envVars:
       - key: CITED_TRANSPORT
         value: http

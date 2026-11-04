@@ -368,13 +368,36 @@ else:
 if __name__ == "__main__":
     transport = os.getenv("CITED_TRANSPORT", "stdio")
     if transport == "http":
+        import uvicorn
+        from starlette.applications import Starlette
+        from starlette.requests import Request
+        from starlette.responses import JSONResponse
+        from starlette.routing import Mount, Route
+
         port = int(os.getenv("PORT", "8000"))
         log.info("Starting Cited HTTP server on port %d (path /mcp)", port)
-        asyncio.run(mcp.run_streamable_http_async(
-            host="0.0.0.0",
-            port=port,
+
+        async def health(request: Request) -> JSONResponse:
+            return JSONResponse({
+                "name": "Cited",
+                "status": "ok",
+                "mcp_endpoint": "/mcp",
+                "tools": ["search_substack", "list_posts", "admin_get_history"],
+                "usage": "Add this server in claude.ai → Settings → Integrations",
+            })
+
+        mcp_app = mcp.streamable_http_app(
             streamable_http_path="/mcp",
             stateless_http=True,
-        ))
+            host="0.0.0.0",
+        )
+
+        app = Starlette(routes=[
+            Route("/", health),
+            Route("/health", health),
+            Mount("/", app=mcp_app),
+        ])
+
+        uvicorn.run(app, host="0.0.0.0", port=port)
     else:
         asyncio.run(mcp.run_stdio_async())
