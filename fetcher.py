@@ -1,9 +1,9 @@
 """
 Fetches publicly available posts from Substack newsletters.
-Caches per-subdomain for CACHE_TTL seconds.
+Supports both *.substack.com and custom domains (e.g. news.aakashg.com).
+Caches per-domain for CACHE_TTL seconds.
 """
 import re
-import sys
 import time
 import logging
 from dataclasses import dataclass
@@ -34,12 +34,31 @@ class Post:
 
 
 def parse_subdomain(url: str) -> str:
-    m = re.match(r"https?://([^./]+)\.substack\.com", url.strip())
+    """Return a stable cache/storage key for this newsletter.
+
+    *.substack.com  → subdomain only  (e.g. 'aakashgupta')
+    Custom domain   → full hostname   (e.g. 'news.aakashg.com')
+    """
+    url = url.strip().rstrip("/")
+    m = re.match(r"https?://([^./]+)\.substack\.com", url, re.I)
     if m:
         return m.group(1)
+    m = re.match(r"https?://([^/]+)", url, re.I)
+    if m:
+        host = m.group(1).lower()
+        if "." in host:
+            return host
     raise NotSubstackError(
-        f"Expected a Substack URL like https://author.substack.com — got: {url}"
+        f"Provide a full URL like https://author.substack.com or "
+        f"https://news.author.com — got: {url}"
     )
+
+
+def _api_base(key: str) -> str:
+    """API base URL for a newsletter key."""
+    if "." not in key:
+        return f"https://{key}.substack.com"
+    return f"https://{key}"
 
 
 def _strip_html(html: str) -> str:
@@ -50,40 +69,49 @@ def _strip_html(html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-async def _fetch_all(subdomain: str) -> list[Post]:
+async def _fetch_all(key: str) -> list[Post]:
+    base   = _api_base(key)
     posts: list[Post] = []
     offset = 0
     limit  = 25
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         while True:
-            api = (
-                f"https://{subdomain}.substack.com/api/v1/posts"
-                f"?limit={limit}&offset={offset}"
-            )
+            api = f"{base}/api/v1/posts?limit={limit}&offset={offset}"
             try:
                 resp = await client.get(api)
                 resp.raise_for_status()
             except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    raise NotSubstackError(
+                        f"'{key}' doesn't appear to be a Substack newsletter "
+                        "(API returned 404). Try the .substack.com URL directly."
+                    ) from exc
                 raise FetchError(
-                    f"Substack API {exc.response.status_code} for '{subdomain}'"
+                    f"Substack API {exc.response.status_code} for '{key}'"
                 ) from exc
             except httpx.RequestError as exc:
                 raise FetchError(f"Network error: {exc}") from exc
 
-            batch = resp.json()
-            if not batch:
+            try:
+                batch = resp.json()
+            except Exception as exc:
+                raise NotSubstackError(
+                    f"'{key}' doesn't appear to be a Substack newsletter "
+                    "(API returned non-JSON)."
+                ) from exc
+
+            if not isinstance(batch, list) or not batch:
                 break
 
             for p in batch:
                 body = p.get("body_html") or p.get("truncated_body_text") or ""
                 text = _strip_html(body)
                 if len(text) < 60:
-                    continue  # paywalled or empty
+                    continue
                 posts.append(Post(
                     title=p.get("title") or "Untitled",
-                    url=(p.get("canonical_url")
-                         or f"https://{subdomain}.substack.com/p/{p.get('slug','')}"),
+                    url=(p.get("canonical_url") or f"{base}/p/{p.get('slug', '')}"),
                     date=(p.get("post_date") or "")[:10],
                     text=text[:5000],
                 ))
@@ -92,27 +120,26 @@ async def _fetch_all(subdomain: str) -> list[Post]:
                 break
             offset += limit
 
-    log.info(f"Fetched {len(posts)} posts from {subdomain}.substack.com")
+    log.info("Fetched %d posts from %s", len(posts), key)
     return posts
 
 
 async def get_posts(url: str) -> list[Post]:
-    """Return posts, using in-process cache."""
-    subdomain = parse_subdomain(url)
-    cached = _CACHE.get(subdomain)
+    """Return posts for a newsletter URL, using in-process cache."""
+    key    = parse_subdomain(url)
+    cached = _CACHE.get(key)
     if cached and time.time() - cached[1] < CACHE_TTL:
-        log.info(f"Cache hit for {subdomain}")
+        log.info("Cache hit for %s", key)
         return cached[0]
 
-    log.info(f"Fetching {subdomain}.substack.com …")
-    posts = await _fetch_all(subdomain)
-    _CACHE[subdomain] = (posts, time.time())
+    log.info("Fetching %s …", key)
+    posts      = await _fetch_all(key)
+    _CACHE[key] = (posts, time.time())
     return posts
 
 
 def invalidate(url: str) -> None:
     try:
-        subdomain = parse_subdomain(url)
-        _CACHE.pop(subdomain, None)
+        _CACHE.pop(parse_subdomain(url), None)
     except NotSubstackError:
         pass
