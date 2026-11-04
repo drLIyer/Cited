@@ -112,12 +112,14 @@ def _strip_html(html: str) -> str:
 async def _fetch_substack(key: str) -> list[Post]:
     base   = _api_base(key)
     posts: list[Post] = []
-    offset = 0
+    cursor: str | None = None
     limit  = 25
 
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         while True:
-            api = f"{base}/api/v1/posts?limit={limit}&offset={offset}"
+            api = f"{base}/api/v1/posts?limit={limit}"
+            if cursor:
+                api += f"&after={cursor}"
             try:
                 resp = await client.get(api)
                 resp.raise_for_status()
@@ -134,14 +136,24 @@ async def _fetch_substack(key: str) -> list[Post]:
                 raise FetchError(f"Network error: {exc}") from exc
 
             try:
-                batch = resp.json()
+                data = resp.json()
             except Exception as exc:
                 raise NotSubstackError(
                     f"'{key}' doesn't appear to be a Substack newsletter "
                     "(API returned non-JSON)."
                 ) from exc
 
-            if not isinstance(batch, list) or not batch:
+            # API returns {"posts": [...], "nextCursor": "..."} or a plain list
+            if isinstance(data, dict):
+                batch  = data.get("posts") or []
+                cursor = data.get("nextCursor") or None
+            elif isinstance(data, list):
+                batch  = data
+                cursor = None
+            else:
+                break
+
+            if not batch:
                 break
 
             for p in batch:
@@ -156,9 +168,8 @@ async def _fetch_substack(key: str) -> list[Post]:
                     text=text[:5000],
                 ))
 
-            if len(batch) < limit or len(posts) >= 200:
+            if not cursor or len(posts) >= 200:
                 break
-            offset += limit
 
     log.info("Fetched %d posts from %s (Substack)", len(posts), key)
     return posts
