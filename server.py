@@ -48,11 +48,22 @@ _ADMIN_TOKEN = os.getenv("CITED_ADMIN_TOKEN", "")
 mcp = MCPServer(
     "Cited",
     instructions=(
-        "Cited gives Claude precise, sourced answers from any Substack newsletter. "
-        "When a user pastes a Substack URL and asks a question, call search_substack "
-        "with that URL and the question. Compose your answer using the returned excerpts, "
-        "citing article titles for every claim. If confidence is low (< 0.5), say so and "
-        "remind the reader to verify with the original source."
+        "Cited retrieves and searches Substack and Medium newsletters to give precise, sourced answers.\n\n"
+
+        "## When the user gives a URL\n"
+        "Call search_substack directly with that URL and their question.\n\n"
+
+        "## When the user gives only an author name (no URL)\n"
+        "1. Use your web search to find the author's newsletter URL. Search for: "
+        '"{author name} substack" or "{author name} newsletter medium". '
+        "Pick the most likely result — prefer a custom domain (e.g. news.author.com) "
+        "or substack.com URL over a social media page.\n"
+        "2. Tell the user which URL you found, then call search_substack with it.\n\n"
+
+        "## Composing answers\n"
+        "Always cite the article title for every claim. "
+        "If confidence is below 0.5, say so and recommend the user verify with the original source. "
+        "If the newsletter is paywalled or returns few results, say so honestly."
     ),
 )
 
