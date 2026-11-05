@@ -48,20 +48,25 @@ _ADMIN_TOKEN = os.getenv("CITED_ADMIN_TOKEN", "")
 mcp = MCPServer(
     "Cited",
     instructions=(
-        "Cited retrieves and searches Substack and Medium newsletters to give precise, sourced answers.\n\n"
+        "Cited retrieves and searches Substack, Medium, and RSS/podcast feeds to give precise, sourced answers.\n\n"
 
         "## When the user gives a URL\n"
-        "Call search_substack directly with that URL and their question.\n\n"
+        "Call search_substack directly with that URL and their question. "
+        "It accepts Substack URLs, Medium URLs, and any RSS or podcast feed URL.\n\n"
 
-        "## When the user gives only an author name (no URL)\n"
-        "1. Use your web search to find the author's newsletter URL. Search for: "
-        '"{author name} substack" or "{author name} newsletter medium". '
-        "Pick the most likely result — prefer a custom domain (e.g. news.author.com) "
-        "or substack.com URL over a social media page.\n"
+        "## When the user gives only an author or podcast name (no URL)\n"
+        "1. Use your web search to find the feed URL. Search for: "
+        '"{name} substack", "{name} newsletter", or "{name} podcast RSS feed". '
+        "Pick the most likely result — prefer a direct feed URL (e.g. /feed, /rss, .xml), "
+        "a custom domain, or a substack.com URL over social media pages.\n"
         "2. Tell the user which URL you found, then call search_substack with it.\n\n"
 
+        "## When the user gives a podcast name\n"
+        "Search for '{podcast name} RSS feed' or '{podcast name} podcast feed URL' to find the RSS feed, "
+        "then call search_substack with that feed URL.\n\n"
+
         "## Composing answers\n"
-        "Always cite the article title for every claim. "
+        "Always cite the article or episode title for every claim. "
         "If confidence is below 0.5, say so and recommend the user verify with the original source. "
         "If the newsletter is paywalled or returns few results, say so honestly."
     ),
@@ -73,17 +78,18 @@ mcp = MCPServer(
 @mcp.tool()
 async def search_substack(url: str, query: str, top_k: int = 5) -> str:
     """
-    Search a Substack newsletter for content relevant to a query.
+    Search a newsletter or podcast feed for content relevant to a query.
 
-    Fetches all publicly available posts (cached for 1 hour), builds a
-    hybrid BM25 + vector index, and reranks with a cross-encoder. Returns
-    ranked excerpts with titles, dates, URLs, and a retrieval confidence score.
+    Accepts Substack URLs, Medium URLs, and any RSS or Atom feed URL (including
+    podcast feeds). Fetches all publicly available posts/episodes (cached for
+    1 hour), builds a hybrid BM25 + vector index, and reranks with a
+    cross-encoder. Returns ranked excerpts with titles, dates, URLs, and a
+    retrieval confidence score.
 
-    Use this whenever a user pastes a Substack URL and asks a question about it.
-    Low confidence (< 0.5) means the newsletter probably doesn't cover the topic.
+    Low confidence (< 0.5) means the source probably doesn't cover the topic.
 
     Args:
-        url:   Substack newsletter URL, e.g. https://aakashgupta.substack.com
+        url:   Newsletter or feed URL — Substack, Medium, or any RSS/podcast feed
         query: The question or search query
         top_k: Number of excerpts to return (default 5, max 10)
     """
@@ -145,14 +151,14 @@ async def search_substack(url: str, query: str, top_k: int = 5) -> str:
 @mcp.tool()
 async def list_posts(url: str) -> str:
     """
-    List all publicly available posts from a Substack newsletter.
+    List all publicly available posts or episodes from a newsletter or feed.
 
-    Returns post titles, publication dates, and URLs. Useful for exploring
-    what topics a newsletter covers before searching, or when a user asks
-    "what has this newsletter written about?".
+    Accepts Substack URLs, Medium URLs, and any RSS or Atom feed URL (including
+    podcast feeds). Returns titles, publication dates, and URLs. Useful for
+    exploring what topics a source covers before searching.
 
     Args:
-        url: Substack newsletter URL, e.g. https://aakashgupta.substack.com
+        url: Newsletter or feed URL — Substack, Medium, or any RSS/podcast feed
     """
     try:
         posts = await _fetcher.get_posts(url)

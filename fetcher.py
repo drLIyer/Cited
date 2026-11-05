@@ -45,8 +45,18 @@ class Post:
 
 # ── Source detection ───────────────────────────────────────────────────────────
 
+_RSS_URL_RE = re.compile(
+    r"\.xml$|\.rss$|\.atom$|/feed/?$|/rss/?$|/atom/?$|/feed/|"
+    r"feeds\.|feedburner\.|simplecast\.com|buzzsprout\.com|"
+    r"transistor\.fm|libsyn\.com|podbean\.com|megaphone\.fm|"
+    r"captivate\.fm|castos\.com|redcircle\.com|anchor\.fm|"
+    r"rss\.com/podcasts|pod\.link",
+    re.I,
+)
+
+
 def _detect_source(url: str) -> str:
-    """Return 'substack', 'medium', or raise for unsupported sources."""
+    """Return 'substack', 'medium', 'rss', or raise for unsupported sources."""
     low = url.lower()
     if "linkedin.com" in low:
         raise NotSubstackError(
@@ -55,6 +65,8 @@ def _detect_source(url: str) -> str:
         )
     if "medium.com" in low:
         return "medium"
+    if _RSS_URL_RE.search(low):
+        return "rss"
     # Substack API works on substack.com subdomains and custom domains
     return "substack"
 
@@ -78,15 +90,20 @@ def parse_subdomain(url: str) -> str:
     if m:
         return m.group(1)
 
-    m = re.match(r"https?://([^/]+)", url, re.I)
+    m = re.match(r"https?://([^/]+)(/[^?#]*)?", url, re.I)
     if m:
         host = m.group(1).lower()
+        path = (m.group(2) or "").strip("/")
         if "." in host:
+            # RSS/generic feed → use full host+path as key to avoid collisions
+            if _RSS_URL_RE.search(url):
+                return f"rss:{host}/{path}".rstrip("/")
             return host
 
     raise NotSubstackError(
         f"Provide a URL like https://author.substack.com, "
-        f"https://medium.com/@author, or https://news.custom.com — got: {url}"
+        f"https://medium.com/@author, https://news.custom.com, "
+        f"or any RSS/podcast feed URL — got: {url}"
     )
 
 
@@ -252,6 +269,89 @@ async def _fetch_medium(url: str) -> list[Post]:
     return posts
 
 
+# ── Generic RSS / Atom / podcast fetcher ──────────────────────────────────────
+
+_ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
+_ATOM_NS   = "http://www.w3.org/2005/Atom"
+
+
+async def _fetch_rss(url: str) -> list[Post]:
+    """Fetch posts/episodes from any RSS 2.0, Atom, or podcast feed URL."""
+    log.info("Fetching RSS feed: %s", url)
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        try:
+            resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise FetchError(
+                f"RSS feed returned {exc.response.status_code} for {url}."
+            ) from exc
+        except httpx.RequestError as exc:
+            raise FetchError(f"Network error fetching RSS feed: {exc}") from exc
+
+    try:
+        root = ET.fromstring(resp.text)
+    except ET.ParseError as exc:
+        raise FetchError(f"Could not parse feed at {url}: {exc}") from exc
+
+    # Detect HTML redirect/login page
+    if root.tag.lower() in ("html", "{http://www.w3.org/1999/xhtml}html"):
+        raise NotSubstackError(
+            f"The URL returned an HTML page, not a feed. "
+            "Try the direct RSS feed URL (often /feed or /rss)."
+        )
+
+    posts: list[Post] = []
+
+    # ── Atom 1.0 ──
+    if root.tag in (f"{{{_ATOM_NS}}}feed", "feed"):
+        ns = _ATOM_NS if root.tag.startswith("{") else ""
+        tag = lambda t: f"{{{ns}}}{t}" if ns else t
+        for entry in root.findall(tag("entry"))[:200]:
+            title_el   = entry.find(tag("title"))
+            link_el    = entry.find(tag("link"))
+            updated_el = entry.find(tag("updated")) or entry.find(tag("published"))
+            content_el = entry.find(tag("content")) or entry.find(tag("summary"))
+
+            title = (title_el.text or "").strip() if title_el is not None else "Untitled"
+            link  = (link_el.get("href") or "").strip() if link_el is not None else ""
+            date  = (updated_el.text or "")[:10] if updated_el is not None else ""
+            text  = _strip_html(content_el.text or "") if content_el is not None else ""
+
+            if len(text) >= 60:
+                posts.append(Post(title=title or "Untitled", url=link, date=date, text=text[:5000]))
+
+    else:
+        # ── RSS 2.0 (includes podcast feeds) ──
+        channel = root.find("channel") or root
+        for item in channel.findall("item")[:200]:
+            title_el = item.find("title")
+            link_el  = item.find("link")
+            date_el  = item.find("pubDate") or item.find("dc:date", _NS)
+            guid_el  = item.find("guid")
+
+            title = (title_el.text or "").strip() if title_el is not None else "Untitled"
+            link  = (link_el.text or "").strip() if link_el is not None else ""
+            # Podcast feeds often omit <link>; use guid when it's a permalink
+            if not link and guid_el is not None:
+                if guid_el.get("isPermaLink", "true").lower() != "false":
+                    link = (guid_el.text or "").strip()
+            date = (date_el.text or "")[:10] if date_el is not None else ""
+
+            text = _text_from_rss_item(item)
+            # Fallback: itunes:summary for sparse podcast feeds
+            if len(text) < 60:
+                itunes_summary = item.find(f"{{{_ITUNES_NS}}}summary")
+                if itunes_summary is not None and itunes_summary.text:
+                    text = itunes_summary.text.strip()
+
+            if len(text) >= 60:
+                posts.append(Post(title=title or "Untitled", url=link, date=date, text=text[:5000]))
+
+    log.info("Fetched %d posts/episodes from %s (RSS)", len(posts), url)
+    return posts
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 async def get_posts(url: str) -> list[Post]:
@@ -266,6 +366,8 @@ async def get_posts(url: str) -> list[Post]:
 
     if source == "medium":
         posts = await _fetch_medium(url)
+    elif source == "rss":
+        posts = await _fetch_rss(url)
     else:
         posts = await _fetch_substack(key)
 
