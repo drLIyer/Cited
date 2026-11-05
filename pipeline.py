@@ -4,6 +4,8 @@ In-memory RAG pipeline: BM25 + vector search → RRF → cross-encoder reranking
 No FAISS needed at this scale — direct numpy dot product over <1000 chunks is
 fast enough (< 50 ms) and avoids the extra dependency.
 """
+from __future__ import annotations
+
 import math
 import re
 import time
