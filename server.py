@@ -97,7 +97,8 @@ async def search_substack(url: str, query: str, top_k: int = 5) -> str:
             })
 
         chunks     = _pipeline.chunk_posts(posts)
-        hits       = _pipeline.search(query, chunks, top_k=top_k)
+        cache_key  = _fetcher.parse_subdomain(url)
+        hits       = _pipeline.search(query, chunks, top_k=top_k, cache_key=cache_key)
         confidence = _pipeline.retrieval_confidence(hits)
 
         result: dict = {
@@ -199,7 +200,8 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
         try:
             posts      = await _fetcher.get_posts(url)
             chunks     = _pipeline.chunk_posts(posts)
-            hits       = _pipeline.search(question, chunks, top_k=5)
+            cache_key  = _fetcher.parse_subdomain(url)
+            hits       = _pipeline.search(question, chunks, top_k=5, cache_key=cache_key)
             confidence = _pipeline.retrieval_confidence(hits)
             context    = _pipeline.build_context(hits)
             sources    = [{"title": h["title"], "url": h["url"], "date": h["date"]}
@@ -385,6 +387,31 @@ if __name__ == "__main__":
         port = int(os.getenv("PORT", "8000"))
         log.info("Starting Cited HTTP server on port %d (path /mcp)", port)
 
+        # Pre-warm models + index popular newsletters at startup.
+        # CITED_PREWARM_URLS = comma-separated list (default: Lenny + Aakash).
+        _PREWARM_URLS = [
+            u.strip() for u in os.getenv(
+                "CITED_PREWARM_URLS",
+                "https://www.lennysnewsletter.com,https://news.aakashg.com",
+            ).split(",") if u.strip()
+        ]
+
+        async def _prewarm_all():
+            _pipeline.prewarm()
+            for url in _PREWARM_URLS:
+                try:
+                    posts  = await _fetcher.get_posts(url)
+                    chunks = _pipeline.chunk_posts(posts)
+                    key    = _fetcher.parse_subdomain(url)
+                    _pipeline.precompute_embeddings(key, chunks)
+                except Exception as exc:
+                    log.warning("Pre-warm failed for %s: %s", url, exc)
+
+        import threading
+        def _run_prewarm():
+            asyncio.run(_prewarm_all())
+        threading.Thread(target=_run_prewarm, daemon=True).start()
+
         mcp_app = mcp.streamable_http_app(
             streamable_http_path="/mcp",
             stateless_http=True,
@@ -426,6 +453,7 @@ if __name__ == "__main__":
                     "tools": ["search_substack", "list_posts", "admin_get_history"],
                     "usage": "Add this server in claude.ai → Settings → Connectors",
                     "api_check": spot,
+                    "warmed_newsletters": len(_pipeline._EMBED_CACHE),
                 }).encode()
                 http_status = 200 if status == "ok" else 503
                 await send({"type": "http.response.start", "status": http_status,

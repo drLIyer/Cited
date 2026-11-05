@@ -168,7 +168,7 @@ async def _fetch_substack(key: str) -> list[Post]:
                     text=text[:5000],
                 ))
 
-            if not cursor or len(posts) >= 200:
+            if not cursor or len(posts) >= 100:
                 break
 
     log.info("Fetched %d posts from %s (Substack)", len(posts), key)

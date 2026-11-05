@@ -6,6 +6,7 @@ fast enough (< 50 ms) and avoids the extra dependency.
 """
 import math
 import re
+import time
 import logging
 from dataclasses import dataclass
 
@@ -19,10 +20,14 @@ CHUNK_WORDS    = 300
 CHUNK_OVERLAP  = 50
 RRF_K          = 60
 CANDIDATES     = 30   # BM25 + vector each return this many before RRF
+_EMBED_TTL     = 3600  # match fetcher cache TTL
 
-# Lazy-loaded — first call takes ~5 s to download models
+# Lazy-loaded models
 _embed_model  = None
 _reranker     = None
+
+# Per-newsletter embedding cache: key → (chunks, matrix, timestamp)
+_EMBED_CACHE: dict[str, tuple[list, np.ndarray, float]] = {}
 
 
 def _embed():
@@ -41,6 +46,21 @@ def _rerank():
         log.info("Loading cross-encoder …")
         _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
     return _reranker
+
+
+def prewarm() -> None:
+    """Load both models into memory. Call at server startup so the first user query is fast."""
+    log.info("Pre-warming models …")
+    _embed()
+    _rerank()
+    log.info("Models ready.")
+
+
+def precompute_embeddings(cache_key: str, chunks: list[Chunk]) -> None:
+    """Pre-compute and cache embeddings for a newsletter. Call at startup for popular newsletters."""
+    model = _embed()
+    _get_cached_embeddings(cache_key, chunks, model)
+    log.info("Pre-computed embeddings for %s (%d chunks)", cache_key, len(chunks))
 
 
 # ── Chunking ───────────────────────────────────────────────────────────────────
@@ -79,28 +99,28 @@ def _tokenize(text: str) -> list[str]:
 
 # ── Search ─────────────────────────────────────────────────────────────────────
 
-def search(query: str, chunks: list[Chunk], top_k: int = 5) -> list[dict]:
+def search(query: str, chunks: list[Chunk], top_k: int = 5,
+           cache_key: str | None = None) -> list[dict]:
     if not chunks:
         return []
 
     n = len(chunks)
     k = min(CANDIDATES, n)
 
-    # BM25
+    # BM25 (fast, no model needed)
     from rank_bm25 import BM25Okapi
-    corpus     = [_tokenize(c.text) for c in chunks]
-    bm25       = BM25Okapi(corpus)
+    corpus      = [_tokenize(c.text) for c in chunks]
+    bm25        = BM25Okapi(corpus)
     bm25_scores = bm25.get_scores(_tokenize(query))
-    bm25_top   = sorted(range(n), key=lambda i: bm25_scores[i], reverse=True)[:k]
+    bm25_top    = sorted(range(n), key=lambda i: bm25_scores[i], reverse=True)[:k]
 
-    # Vector (cosine via dot product on L2-normalised vectors)
-    model  = _embed()
-    q_emb  = model.encode([query], convert_to_numpy=True)[0].astype(np.float32)
+    # Vector — use cached embeddings when available
+    model = _embed()
+    q_emb = model.encode([query], convert_to_numpy=True)[0].astype(np.float32)
     q_emb /= np.linalg.norm(q_emb) + 1e-9
 
-    c_embs  = model.encode([c.text for c in chunks], convert_to_numpy=True).astype(np.float32)
-    c_embs /= np.linalg.norm(c_embs, axis=1, keepdims=True) + 1e-9
-    sims    = c_embs @ q_emb
+    c_embs = _get_cached_embeddings(cache_key, chunks, model)
+    sims   = c_embs @ q_emb
     vec_top = sorted(range(n), key=lambda i: float(sims[i]), reverse=True)[:k]
 
     # RRF
@@ -128,6 +148,31 @@ def search(query: str, chunks: list[Chunk], top_k: int = 5) -> list[dict]:
         }
         for i, s in ranked
     ]
+
+
+def _get_cached_embeddings(cache_key: str | None, chunks: list[Chunk],
+                            model) -> np.ndarray:
+    """Return L2-normalised embeddings for chunks, using cache when possible."""
+    now = time.time()
+    if cache_key:
+        cached = _EMBED_CACHE.get(cache_key)
+        if cached and now - cached[2] < _EMBED_TTL and len(cached[0]) == len(chunks):
+            log.info("Embedding cache hit for %s (%d chunks)", cache_key, len(chunks))
+            return cached[1]
+
+    log.info("Computing embeddings for %d chunks (key=%s)…", len(chunks), cache_key)
+    c_embs = model.encode([c.text for c in chunks], convert_to_numpy=True,
+                          batch_size=64, show_progress_bar=False).astype(np.float32)
+    c_embs /= np.linalg.norm(c_embs, axis=1, keepdims=True) + 1e-9
+
+    if cache_key:
+        _EMBED_CACHE[cache_key] = (chunks, c_embs, now)
+        # Evict oldest entry if cache grows beyond 20 newsletters
+        if len(_EMBED_CACHE) > 20:
+            oldest = min(_EMBED_CACHE, key=lambda k: _EMBED_CACHE[k][2])
+            del _EMBED_CACHE[oldest]
+
+    return c_embs
 
 
 def retrieval_confidence(hits: list[dict]) -> float:
