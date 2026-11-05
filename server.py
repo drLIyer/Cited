@@ -418,45 +418,17 @@ if __name__ == "__main__":
             host="0.0.0.0",
         )
 
-        # ── Live API spot-check (cached 5 min) ────────────────────────────────
-        _SPOT_CHECK_URL  = "https://aakashgupta.substack.com"
-        _spot_cache: dict = {"result": None, "ts": 0.0}
-
-        async def _run_spot_check() -> dict:
-            import time
-            now = time.time()
-            if _spot_cache["result"] and now - _spot_cache["ts"] < 300:
-                return _spot_cache["result"]
-            try:
-                posts = await _fetcher.get_posts(_SPOT_CHECK_URL)
-                result = {"posts_fetched": len(posts), "ok": len(posts) > 0}
-                if len(posts) == 0:
-                    result["warning"] = (
-                        "Substack API spot-check returned 0 posts — "
-                        "the API response format may have changed again. "
-                        "Check fetcher._fetch_substack."
-                    )
-            except Exception as exc:
-                result = {"posts_fetched": 0, "ok": False, "error": str(exc)}
-            _spot_cache.update({"result": result, "ts": now})
-            return result
-
         async def app(scope, receive, send):
             if scope["type"] == "http" and scope.get("path") in ("/", "/health"):
-                import time as _time
-                spot = await _run_spot_check()
-                status = "ok" if spot.get("ok") else "degraded"
                 body = _json.dumps({
                     "name": "Cited",
-                    "status": status,
+                    "status": "ok",
                     "mcp_endpoint": "/mcp",
                     "tools": ["search_substack", "list_posts", "admin_get_history"],
                     "usage": "Add this server in claude.ai → Settings → Connectors",
-                    "api_check": spot,
                     "warmed_newsletters": len(_pipeline._EMBED_CACHE),
                 }).encode()
-                http_status = 200 if status == "ok" else 503
-                await send({"type": "http.response.start", "status": http_status,
+                await send({"type": "http.response.start", "status": 200,
                             "headers": [[b"content-type", b"application/json"]]})
                 await send({"type": "http.response.body", "body": body})
             else:
