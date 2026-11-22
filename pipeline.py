@@ -6,8 +6,10 @@ fast enough (< 50 ms) and avoids the extra dependency.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 import re
+import threading
 import time
 import logging
 from dataclasses import dataclass
@@ -28,25 +30,36 @@ _EMBED_TTL     = 3600  # match fetcher cache TTL
 _embed_model  = None
 _reranker     = None
 
-# Per-newsletter embedding cache: key → (chunks, matrix, timestamp)
-_EMBED_CACHE: dict[str, tuple[list, np.ndarray, float]] = {}
+# Per-newsletter embedding cache: key → (fingerprint, matrix, timestamp)
+# The fingerprint is a hash of the chunk texts, so a changed feed never reuses
+# embeddings computed for different text (even if the chunk count matches).
+_EMBED_CACHE: dict[str, tuple[str, np.ndarray, float]] = {}
+
+# Searches run in worker threads (and pre-warm in its own thread), so guard
+# lazy model loading and cache mutation.
+_MODEL_LOCK = threading.Lock()
+_CACHE_LOCK = threading.Lock()
 
 
 def _embed():
     global _embed_model
     if _embed_model is None:
-        from sentence_transformers import SentenceTransformer
-        log.info("Loading embedding model …")
-        _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+        with _MODEL_LOCK:
+            if _embed_model is None:
+                from sentence_transformers import SentenceTransformer
+                log.info("Loading embedding model …")
+                _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
     return _embed_model
 
 
 def _rerank():
     global _reranker
     if _reranker is None:
-        from sentence_transformers import CrossEncoder
-        log.info("Loading cross-encoder …")
-        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        with _MODEL_LOCK:
+            if _reranker is None:
+                from sentence_transformers import CrossEncoder
+                log.info("Loading cross-encoder …")
+                _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
     return _reranker
 
 
@@ -156,9 +169,10 @@ def _get_cached_embeddings(cache_key: str | None, chunks: list[Chunk],
                             model) -> np.ndarray:
     """Return L2-normalised embeddings for chunks, using cache when possible."""
     now = time.time()
+    fp  = _fingerprint(chunks)
     if cache_key:
         cached = _EMBED_CACHE.get(cache_key)
-        if cached and now - cached[2] < _EMBED_TTL and len(cached[0]) == len(chunks):
+        if cached and now - cached[2] < _EMBED_TTL and cached[0] == fp:
             log.info("Embedding cache hit for %s (%d chunks)", cache_key, len(chunks))
             return cached[1]
 
@@ -168,13 +182,24 @@ def _get_cached_embeddings(cache_key: str | None, chunks: list[Chunk],
     c_embs /= np.linalg.norm(c_embs, axis=1, keepdims=True) + 1e-9
 
     if cache_key:
-        _EMBED_CACHE[cache_key] = (chunks, c_embs, now)
-        # Evict oldest entry if cache grows beyond 20 newsletters
-        if len(_EMBED_CACHE) > 20:
-            oldest = min(_EMBED_CACHE, key=lambda k: _EMBED_CACHE[k][2])
-            del _EMBED_CACHE[oldest]
+        with _CACHE_LOCK:
+            _EMBED_CACHE[cache_key] = (fp, c_embs, now)
+            # Evict oldest entry if cache grows beyond 20 newsletters
+            if len(_EMBED_CACHE) > 20:
+                oldest = min(_EMBED_CACHE, key=lambda k: _EMBED_CACHE[k][2])
+                del _EMBED_CACHE[oldest]
 
     return c_embs
+
+
+def _fingerprint(chunks: list[Chunk]) -> str:
+    h = hashlib.sha256()
+    for c in chunks:
+        h.update(c.url.encode("utf-8", "replace"))
+        h.update(b"\x00")
+        h.update(c.text.encode("utf-8", "replace"))
+        h.update(b"\x01")
+    return h.hexdigest()
 
 
 def retrieval_confidence(hits: list[dict]) -> float:

@@ -5,3 +5,4 @@ rank-bm25==0.2.2
 numpy>=1.26.0
 anthropic>=0.40.0
 uvicorn>=0.30.0
+defusedxml>=0.7.1

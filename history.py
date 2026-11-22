@@ -1,7 +1,7 @@
 """
 Persistent Q&A history for Cited — two layers:
 
-  1. SQLite (~/cited/history.db)
+  1. SQLite (history.db next to this file, or $CITED_HISTORY_DB)
      Full Q&A, sources, confidence, timestamps. Survives restarts.
      Queryable by newsletter URL or keyword.
 
@@ -19,7 +19,7 @@ from typing import Optional
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 _HERE    = Path(__file__).parent
-DB_PATH  = _HERE / "history.db"
+DB_PATH  = Path(os.getenv("CITED_HISTORY_DB", str(_HERE / "history.db")))
 
 # Claude auto-memory: ~/.claude/projects/<home-slug>/memory/
 # Slug = home path with / replaced by -  (e.g. /Users/liyer_1 → -Users-liyer-1)
@@ -56,8 +56,13 @@ def _conn() -> sqlite3.Connection:
 
 
 def save(url: str, question: str, answer: str,
-         sources: list, confidence: float, tool: str = "search") -> int:
-    """Save a Q&A. Returns the new row id."""
+         sources: list, confidence: float, tool: str = "search",
+         update_memory: bool = True) -> int:
+    """Save a Q&A. Returns the new row id.
+
+    update_memory=False skips the Claude memory file (used in hosted HTTP mode,
+    where writing into the server's ~/.claude makes no sense).
+    """
     subdomain = _subdomain(url)
     db = _conn()
     cur = db.execute(
@@ -70,7 +75,8 @@ def save(url: str, question: str, answer: str,
     row_id = cur.lastrowid
     db.commit()
     db.close()
-    _update_memory(subdomain, question)
+    if update_memory:
+        _update_memory(subdomain, question)
     return row_id
 
 
@@ -93,10 +99,11 @@ def get(url: Optional[str] = None, limit: int = 20) -> list[dict]:
 def keyword_search(query: str, limit: int = 10) -> list[dict]:
     """Simple keyword search across questions and answers."""
     db   = _conn()
-    like = f"%{query}%"
+    esc  = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
     rows = db.execute(
         """SELECT * FROM history
-           WHERE question LIKE ? OR answer LIKE ?
+           WHERE question LIKE ? ESCAPE '\\' OR answer LIKE ? ESCAPE '\\'
            ORDER BY ts DESC LIMIT ?""",
         (like, like, limit),
     ).fetchall()
@@ -114,8 +121,18 @@ def _subdomain(url: str) -> str:
         return url.rstrip("/")
 
 
+def label(subdomain: str) -> str:
+    """Display label for a stored newsletter key (adds .substack.com only for bare subdomains)."""
+    try:
+        from fetcher import display_name
+        return display_name(subdomain)
+    except Exception:
+        return subdomain
+
+
 def _to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
+    d["label"]   = label(d["subdomain"])
     d["sources"] = json.loads(d.get("sources") or "[]")
     d["date"]    = time.strftime("%Y-%m-%d", time.localtime(d["ts"]))
     return d
@@ -149,7 +166,7 @@ def _update_memory(subdomain: str, question: str) -> None:
         entry = f"- {date}: {topic}"
 
         content = MEMORY_FILE.read_text() if MEMORY_FILE.exists() else _MEMORY_TEMPLATE
-        header  = f"### {subdomain}.substack.com"
+        header  = f"### {label(subdomain)}"
 
         if header in content:
             # Avoid duplicate entries for the same topic on the same day
