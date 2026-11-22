@@ -97,6 +97,76 @@ function renderOverview(o) {
   renderThreats(sec);
   renderAutofix(af);
   renderDigest(o.digest || {});
+  renderGrowth(o.growth);
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function svg(tag, attrs) {
+  const n = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs || {})) n.setAttribute(k, v);
+  return n;
+}
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+const fmtDay = (d) => new Date(d + "T00:00:00Z").toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" });
+
+function renderGrowth(g) {
+  const panel = document.getElementById("growth-panel");
+  panel.hidden = !g;
+  if (!g) return;
+  const w = g.week;
+  const chg = (pct) => pct == null ? el("span", { class: "muted" }, "no prior data")
+    : pct === 0 ? el("span", { class: "muted" }, "no change vs prior week")
+    : el("span", { class: pct > 0 ? "chg-up" : "chg-down" }, `${pct > 0 ? "▲" : "▼"} ${Math.abs(pct)}% vs prior week`);
+  document.getElementById("growth-tiles").replaceChildren(
+    ...[["Searches (7 days)", w.searches, w.searches_change_pct, `${w.searches_prev} the week before`],
+        ["Newsletters searched (7 days)", w.newsletters, w.newsletters_change_pct, `${w.newsletters_prev} the week before`],
+        ["Avg daily clients (approx.)", g.clients_enabled ? w.avg_daily_clients : "—", w.clients_change_pct,
+         `${w.avg_daily_clients_prev} the week before`]]
+      .map(([k, v, pct, sub]) => el("div", { class: "tile" }, el("div", { class: "k" }, k),
+        el("div", { class: "v" }, v), el("div", { class: "sub" }, chg(pct), " · ", sub))));
+
+  // Bar chart: one series (searches/day), single hue, rounded data-ends, 2px gaps, recessive grid.
+  const box = document.getElementById("growth-chart"), tip = document.getElementById("growth-tip");
+  const days = g.days, W = Math.max(320, box.clientWidth || 800), H = 200;
+  const padL = 34, padB = 22, padT = 8, plotW = W - padL, plotH = H - padB - padT;
+  const max = niceMax(Math.max(...days.map((d) => d.searches), 1));
+  const s = svg("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+  for (const f of [0, 0.5, 1]) {
+    const y = padT + plotH * (1 - f);
+    s.append(svg("line", { x1: padL, x2: W, y1: y, y2: y, stroke: "var(--grid)", "stroke-width": 1 }));
+    const t = svg("text", { x: padL - 6, y: y + 4, "text-anchor": "end" }); t.textContent = Math.round(max * f); s.append(t);
+  }
+  const gap = 2, bw = (plotW - gap * (days.length - 1)) / days.length;
+  days.forEach((d, i) => {
+    const x = padL + i * (bw + gap), h = (d.searches / max) * plotH, y = padT + plotH - h, r = Math.min(4, bw / 2, h);
+    const hit = svg("rect", { class: "hit", x, y: padT, width: bw + gap, height: plotH });
+    const bar = svg("path", { class: "bar", d: h <= 0 ? "" :
+      `M${x},${padT + plotH} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${padT + plotH} Z` });
+    hit.addEventListener("mousemove", (ev) => {
+      tip.hidden = false;
+      tip.replaceChildren(el("b", {}, fmtDay(d.day)), el("div", {}, `${d.searches} searches`),
+        el("div", {}, `${d.newsletters} newsletters`), el("div", { class: "muted" }, `${d.clients} clients (approx.)`));
+      tip.style.left = `${Math.min(ev.clientX + 12, window.innerWidth - 170)}px`;
+      tip.style.top = `${ev.clientY + 12}px`;
+      bar.classList.add("on");
+    });
+    hit.addEventListener("mouseleave", () => { tip.hidden = true; bar.classList.remove("on"); });
+    s.append(hit, bar);
+    if ((days.length - 1 - i) % 7 === 0) {
+      const t = svg("text", { x: x + bw / 2, y: H - 6, "text-anchor": "middle" }); t.textContent = fmtDay(d.day); s.append(t);
+    }
+  });
+  s.append(svg("line", { x1: padL, x2: W, y1: padT + plotH, y2: padT + plotH, stroke: "var(--muted)", "stroke-width": 1 }));
+  box.replaceChildren(s);
+
+  document.querySelector("#growth-table tbody").replaceChildren(...days.slice().reverse().map((d) => el("tr", {},
+    el("td", {}, fmtDay(d.day)), el("td", { class: "num" }, d.searches),
+    el("td", { class: "num" }, d.newsletters), el("td", { class: "num" }, d.clients))));
 }
 
 const RESULT_LABEL = { applied: "Applied", worked: "Worked", failed: "Didn't work", skipped: "Skipped" };

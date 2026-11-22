@@ -10,8 +10,8 @@ services:
         value: http
       - key: CITED_ADMIN_TOKEN
         sync: false   # set manually — enables admin_get_history tool
-      # ANTHROPIC_API_KEY is NOT required. ask_substack is disabled in HTTP mode;
-      # Claude in the user's chat handles synthesis from search_substack excerpts.
+      # ANTHROPIC_API_KEY is NOT required. ask_newsletter is disabled in HTTP mode;
+      # Claude in the user's chat handles synthesis from search_newsletter excerpts.
       - key: CITED_PUBLIC_URL
         value: https://cited-7bys.onrender.com
       # Persistent data: attach a Render disk (e.g. mounted at /var/data) and set

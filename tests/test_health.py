@@ -56,7 +56,7 @@ async def test_full_report_contents(http_server):
     assert body["status"] in ("ok", "degraded")
     assert body["version"] == "1.0.0"
     assert body["mcp_endpoint"] == "/mcp"
-    assert sorted(body["tools"]) == ["list_posts", "search_substack"]
+    assert sorted(body["tools"]) == ["list_posts", "search_newsletter"]
     assert body["rate_limit_per_minute"] == 15
     assert body["prewarm"]["state"] == "ready"
     for key in ("models", "search_selftest", "mcp_tools", "history_db", "memory", "disk", "event_loop"):

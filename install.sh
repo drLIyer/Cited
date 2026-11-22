@@ -137,8 +137,8 @@ Next steps:
      "Search https://aakashgupta.substack.com for content about pricing strategy"
 
 Tools available:
-  search_substack   — returns ranked excerpts (Claude synthesizes the answer)
+  search_newsletter   — returns ranked excerpts (Claude synthesizes the answer)
   list_posts        — lists all public posts from the newsletter
-  ask_substack      — full answer via Haiku (only if ANTHROPIC_API_KEY is set)
+  ask_newsletter      — full answer via Haiku (only if ANTHROPIC_API_KEY is set)
 
 MSG

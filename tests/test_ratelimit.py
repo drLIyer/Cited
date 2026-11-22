@@ -155,9 +155,9 @@ def _call(base, tool, args, ip):
 def test_rate_limit_end_to_end(live_server):
     url = "https://feeds.example/feed.xml"
     for _ in range(3):
-        out = json.loads(_call(live_server, "search_substack", {"url": url, "query": "pricing"}, "203.0.113.7"))
+        out = json.loads(_call(live_server, "search_newsletter", {"url": url, "query": "pricing"}, "203.0.113.7"))
         assert "results" in out
-    blocked = json.loads(_call(live_server, "search_substack", {"url": url, "query": "pricing"}, "203.0.113.7"))
+    blocked = json.loads(_call(live_server, "search_newsletter", {"url": url, "query": "pricing"}, "203.0.113.7"))
     assert blocked["rate_limited"] is True
     assert "3 searches per minute" in blocked["error"]
 
@@ -165,7 +165,7 @@ def test_rate_limit_end_to_end(live_server):
     assert "Rate limit reached" in _call(live_server, "list_posts", {"url": url}, "203.0.113.7")
 
     # A different client is unaffected
-    out = json.loads(_call(live_server, "search_substack", {"url": url, "query": "pricing"}, "198.51.100.9"))
+    out = json.loads(_call(live_server, "search_newsletter", {"url": url, "query": "pricing"}, "198.51.100.9"))
     assert "results" in out
 
 

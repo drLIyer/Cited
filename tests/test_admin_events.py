@@ -72,7 +72,7 @@ def test_disabled_without_admin_token(server_factory):
 
 def test_events_never_store_questions_or_ips(srv, mock_http):
     mock_http["https://feeds.example/feed.xml"] = httpx.Response(500)
-    asyncio.run(srv.search_substack("https://feeds.example/feed.xml", "my secret question"))
+    asyncio.run(srv.search_newsletter("https://feeds.example/feed.xml", "my secret question"))
     dump = json.dumps(events.query(limit=100))
     assert "my secret question" not in dump
 
@@ -80,7 +80,7 @@ def test_events_never_store_questions_or_ips(srv, mock_http):
 # ── Threats ──────────────────────────────────────────────────────────────────
 
 async def test_ssrf_attempt_counts_as_threat(srv):
-    await srv.search_substack("https://169.254.169.254/latest/meta-data/feed", "x")
+    await srv.search_newsletter("https://169.254.169.254/latest/meta-data/feed", "x")
     await srv.list_posts("http://127.0.0.1/feed")
     sec = events.security_summary()
     blocked = next(t for t in sec["types"] if t["kind"] == "blocked_url")
@@ -91,7 +91,7 @@ async def test_xml_bomb_counts_as_blocked_content(srv, mock_http):
     bomb = b"""<?xml version="1.0"?><!DOCTYPE l [<!ENTITY a "aa"><!ENTITY b "&a;&a;">]>
 <rss><channel><item><title>&b;</title></item></channel></rss>"""
     mock_http["https://feeds.example/feed.xml"] = httpx.Response(200, content=bomb)
-    out = json.loads(await srv.search_substack("https://feeds.example/feed.xml", "x"))
+    out = json.loads(await srv.search_newsletter("https://feeds.example/feed.xml", "x"))
     assert "unsafe XML" in out["error"]
     kinds = {g["kind"] for g in events.groups(category="security")}
     assert kinds == {"blocked_content"}
@@ -179,8 +179,8 @@ async def test_admin_api_requires_token(srv):
 
 async def test_overview_contents(srv, mock_http):
     mock_http["https://feeds.example/feed.xml"] = httpx.Response(200, content=FEED)
-    await srv.search_substack("https://feeds.example/feed.xml", "pricing")
-    await srv.search_substack("https://127.0.0.1/feed", "x")
+    await srv.search_newsletter("https://feeds.example/feed.xml", "pricing")
+    await srv.search_newsletter("https://127.0.0.1/feed", "x")
     async with client(srv) as c:
         o = (await c.get("/admin/api/overview", headers=AUTH)).json()
     assert o["health"]["summary"]
@@ -192,7 +192,7 @@ async def test_overview_contents(srv, mock_http):
 
 async def test_errors_and_searches_endpoints(srv, mock_http):
     mock_http["https://feeds.example/feed.xml"] = httpx.Response(200, content=FEED)
-    await srv.search_substack("https://feeds.example/feed.xml", "pricing")
+    await srv.search_newsletter("https://feeds.example/feed.xml", "pricing")
     logging.getLogger("x").error("Something broke")
     async with client(srv) as c:
         errs = (await c.get("/admin/api/errors?category=error", headers=AUTH)).json()

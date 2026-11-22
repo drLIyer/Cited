@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cited — sourced answers from any newsletter or podcast</title>
+<meta name="description" content="Cited lets Claude search a newsletter's or podcast's own archive and answer with exact quotes, links, and an honest confidence rating. Works with Substack, Medium, and any RSS or podcast feed.">
+<meta property="og:title" content="Cited — ask any newsletter or podcast in Claude">
+<meta property="og:description" content="Answers quoted from the source, with links and an honest confidence rating.">
+<meta property="og:image" content="/icon.png">
+<link rel="icon" href="/icon.png">
+<style>
+:root {
+  --navy: #2E3F73; --navy-deep: #161E38; --amber: #F5B23E;
+  --bg: #ffffff; --soft: #f5f6fa; --text: #1b2440; --muted: #5d6680; --line: #e3e6ef;
+  --ok: #27ae60; --warn: #e67e22; --bad: #e74c3c;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #10152a; --soft: #182040; --text: #e8ebf5; --muted: #a3abc6; --line: #2a3460; }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 17px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; }
+a { color: inherit; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 20px; }
+nav { display: flex; align-items: center; gap: 12px; padding: 18px 0; }
+nav img { width: 36px; height: 36px; border-radius: 9px; }
+nav b { font-size: 19px; font-weight: 800; letter-spacing: -.3px; }
+nav .sp { flex: 1; }
+nav a { text-decoration: none; color: var(--muted); font-size: 15px; margin-left: 14px; white-space: nowrap; }
+@media (max-width: 480px) { nav a.opt { display: none; } }
+.hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; padding: 36px 0 64px; }
+h1 { font-size: clamp(34px, 5vw, 52px); line-height: 1.08; margin: 0 0 18px; letter-spacing: -1.2px; font-weight: 850; }
+h1 em { font-style: normal; color: var(--navy); background: linear-gradient(transparent 62%, rgba(245,178,62,.55) 0); }
+@media (prefers-color-scheme: dark) { h1 em { color: #fff; } }
+.lead { font-size: 19px; color: var(--muted); margin: 0 0 26px; }
+.cta { display: flex; gap: 12px; flex-wrap: wrap; }
+.btn { display: inline-block; padding: 12px 20px; border-radius: 10px; font-weight: 700; text-decoration: none; font-size: 16px; }
+.btn.primary { background: var(--navy); color: #fff; }
+.btn.ghost { border: 1px solid var(--line); }
+.small { font-size: 14px; color: var(--muted); margin-top: 14px; }
+
+/* demo */
+.demo { background: var(--soft); border: 1px solid var(--line); border-radius: 16px; padding: 18px; min-height: 470px;
+        box-shadow: 0 20px 50px -24px rgba(22,30,56,.35); font-size: 15px; }
+.demo .bar { display: flex; gap: 6px; margin-bottom: 14px; }
+.demo .bar i { width: 10px; height: 10px; border-radius: 50%; background: var(--line); }
+.msg { margin: 10px 0; opacity: 0; transform: translateY(6px); transition: opacity .35s, transform .35s; }
+.msg.show { opacity: 1; transform: none; }
+.user { background: var(--navy); color: #fff; padding: 10px 14px; border-radius: 14px 14px 4px 14px; margin-left: 18%; }
+.bot { background: var(--bg); border: 1px solid var(--line); padding: 12px 14px; border-radius: 14px 14px 14px 4px; margin-right: 6%; }
+.tool { font-family: var(--mono); font-size: 12.5px; color: var(--muted); padding-left: 4px; }
+.conf { display: inline-block; font-size: 12.5px; font-weight: 700; color: #fff; border-radius: 999px; padding: 1px 10px; margin-bottom: 6px; }
+.conf.high { background: var(--ok); } .conf.low { background: var(--bad); }
+.bot q { font-style: italic; }
+.bot .src { font-size: 13px; color: var(--muted); }
+.warn { background: rgba(231,76,60,.09); border-left: 3px solid var(--bad); padding: 8px 10px; border-radius: 6px; font-size: 14px; margin: 6px 0; }
+.caption { font-size: 12.5px; color: var(--muted); text-align: center; margin-top: 10px; }
+
+section { padding: 56px 0; }
+section.alt { background: var(--soft); }
+h2 { font-size: clamp(26px, 3.4vw, 34px); margin: 0 0 10px; letter-spacing: -.6px; }
+.sub { color: var(--muted); margin: 0 0 30px; max-width: 720px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 18px; }
+.card { background: var(--bg); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+.card h3 { margin: 0 0 6px; font-size: 18px; }
+.card p { margin: 0; color: var(--muted); font-size: 15.5px; }
+.card .ic { font-size: 24px; margin-bottom: 8px; }
+table.cmp { width: 100%; border-collapse: collapse; font-size: 15.5px; }
+table.cmp th, table.cmp td { padding: 11px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+table.cmp th { font-size: 13px; color: var(--muted); }
+table.cmp td:nth-child(2) { color: var(--muted); }
+table.cmp td:nth-child(3) { font-weight: 600; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; }
+.step ol { margin: 8px 0 0; padding-left: 20px; }
+.step li { margin: 6px 0; }
+.copy { display: flex; gap: 8px; align-items: stretch; margin: 8px 0; }
+.copy code { flex: 1; font-family: var(--mono); font-size: 14px; background: var(--soft); border: 1px solid var(--line);
+             padding: 9px 11px; border-radius: 8px; overflow-x: auto; white-space: nowrap; }
+.copy button { font: inherit; font-size: 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg);
+               color: var(--text); padding: 0 12px; cursor: pointer; }
+.prompts { display: grid; gap: 10px; }
+.prompts .copy code { white-space: normal; }
+.sources { display: flex; flex-wrap: wrap; gap: 10px; }
+.sources span { border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; font-size: 15px; }
+details { border-bottom: 1px solid var(--line); padding: 14px 0; }
+details summary { cursor: pointer; font-weight: 700; }
+details p { color: var(--muted); margin: 8px 0 0; }
+footer { padding: 30px 0 50px; color: var(--muted); font-size: 14px; }
+footer a { margin-right: 16px; }
+@media (max-width: 860px) { .hero { grid-template-columns: 1fr; gap: 30px; } .demo { min-height: 0; } }
+@media (prefers-reduced-motion: reduce) { .msg { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <img src="/icon.png" alt="">
+    <b>Cited</b>
+    <span class="sp"></span>
+    <a href="#install">Install</a>
+    <a href="#why" class="opt">Why Cited</a>
+    <a href="https://github.com/drLIyer/Cited">GitHub</a>
+  </nav>
+
+  <div class="hero">
+    <div>
+      <h1>Ask any newsletter or podcast. <em>Get answers you can check.</em></h1>
+      <p class="lead">Cited lets Claude search a newsletter's or podcast's own posts and answer with
+        <b>exact quotes, links to the source</b>, and an <b>honest confidence rating</b> — so you know
+        when an answer is grounded and when it isn't.</p>
+      <div class="cta">
+        <a class="btn primary" href="#install">Add Cited to Claude</a>
+        <a class="btn ghost" href="#why">How it's different</a>
+      </div>
+      <p class="small">Free · No sign-up · Works in claude.ai and Claude Code · Substack, Medium, RSS &amp; podcasts</p>
+    </div>
+    <div>
+      <div class="demo" id="demo" aria-label="Example conversation using Cited">
+        <div class="bar"><i></i><i></i><i></i></div>
+        <div class="msg user">What has The Builder's Notebook said about usage-based pricing?</div>
+        <div class="msg tool">⚙ Cited · search_newsletter — searched 184 posts</div>
+        <div class="msg bot">
+          <span class="conf high">Confidence: High coverage (best match 74%)</span>
+          <div>The newsletter recommends a <b>hybrid model</b>: <q>a small platform fee plus usage keeps revenue
+            predictable while customers grow</q>.</div>
+          <div class="src">— “Pricing for the long tail”, Mar 2025 ↗</div>
+          <div style="margin-top:6px">It warns against pure pay-as-you-go for new products: <q>customers hate a bill
+            they can't predict</q>.</div>
+          <div class="src">— “Five pricing mistakes”, Nov 2024 ↗</div>
+        </div>
+        <div class="msg user">And what does it say about quantum computing?</div>
+        <div class="msg bot">
+          <span class="conf low">Confidence: Limited coverage (best match 21%)</span>
+          <div class="warn">⚠️ Limited coverage: The Builder's Notebook has little on this topic. This answer draws on
+            general AI knowledge rather than the newsletter itself — verify key claims independently.</div>
+        </div>
+      </div>
+      <div class="caption">Illustration with a fictional newsletter. Real answers quote and link real posts.</div>
+    </div>
+  </div>
+</div>
+
+<section class="alt" id="why">
+  <div class="wrap">
+    <h2>What Cited adds to Claude</h2>
+    <p class="sub">Claude can already search the web. Cited does something different: it searches the source itself,
+      and tells you how well the source actually covers your question.</p>
+    <div class="grid">
+      <div class="card"><div class="ic">🗂️</div><h3>Searches the archive, not the web</h3>
+        <p>Up to 200 recent posts per newsletter, searched by meaning — including older posts web search ranks poorly.</p></div>
+      <div class="card"><div class="ic">❝</div><h3>Quotes you can verify</h3>
+        <p>Every claim comes with the exact passage, post title, date, and a link to read it yourself.</p></div>
+      <div class="card"><div class="ic">🎯</div><h3>Honest confidence</h3>
+        <p>High, Moderate, or Limited coverage on every answer. When the source doesn't cover it, Cited says so — plainly.</p></div>
+      <div class="card"><div class="ic">🎙️</div><h3>Podcasts too</h3>
+        <p>Paste a podcast's RSS feed to search episode show notes and summaries.</p></div>
+    </div>
+    <div style="margin-top:34px;overflow-x:auto">
+      <table class="cmp">
+        <thead><tr><th></th><th>Claude on its own</th><th>Claude + Cited</th></tr></thead>
+        <tbody>
+          <tr><td>Finds older posts</td><td>Only what web search ranks</td><td>Searches the newsletter's own posts</td></tr>
+          <tr><td>Sources</td><td>Sometimes, from search snippets</td><td>Exact quote, title, date and link for every claim</td></tr>
+          <tr><td>Knows when it doesn't know</td><td>Rarely says</td><td>Confidence rating + a clear disclaimer when coverage is limited</td></tr>
+          <tr><td>Podcasts</td><td>Hit or miss</td><td>Searches show notes via the RSS feed</td></tr>
+          <tr><td>Your usage limits</td><td>Opens many full pages</td><td>Returns only the most relevant passages</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Add Cited to Claude</h2>
+    <p class="sub">Takes about a minute. No account, no API key.</p>
+    <div class="steps">
+      <div class="card step">
+        <h3>claude.ai (web, desktop, mobile)</h3>
+        <ol>
+          <li>Open <b>Customize → Connectors</b> and click <b>+ Add</b> → <b>Add custom connector</b>.</li>
+          <li>Name it <b>Cited</b> and paste this URL:
+            <div class="copy"><code id="mcp-url">https://cited-7bys.onrender.com/mcp</code><button type="button" data-copy="mcp-url">Copy</button></div></li>
+          <li>Choose <b>No sign in</b>, click <b>Add</b>, then turn Cited on from the <b>+</b> menu in a chat.</li>
+        </ol>
+      </div>
+      <div class="card step">
+        <h3>Claude Code</h3>
+        <ol>
+          <li>Add the plugin marketplace:
+            <div class="copy"><code id="cc1">claude plugin marketplace add drLIyer/Cited</code><button type="button" data-copy="cc1">Copy</button></div></li>
+          <li>Install the plugin:
+            <div class="copy"><code id="cc2">claude plugin install cited@cited-plugins</code><button type="button" data-copy="cc2">Copy</button></div></li>
+        </ol>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <h2>Try these</h2>
+    <p class="sub">Paste a prompt into Claude once Cited is on. Swap in any newsletter or podcast you read.</p>
+    <div class="prompts">
+      <div class="copy"><code id="p1">What has Lenny's Newsletter said about pricing a B2B SaaS product? Quote the posts.</code><button type="button" data-copy="p1">Copy</button></div>
+      <div class="copy"><code id="p2">Search https://news.aakashg.com for advice on PM interviews and give me the top 3 ideas with links.</code><button type="button" data-copy="p2">Copy</button></div>
+      <div class="copy"><code id="p3">Find the podcast RSS feed for Acquired, then tell me which episodes discuss Costco.</code><button type="button" data-copy="p3">Copy</button></div>
+      <div class="copy"><code id="p4">List the posts from https://stratechery.com/feed and summarise the themes from the last month.</code><button type="button" data-copy="p4">Copy</button></div>
+    </div>
+    <h3 style="margin:34px 0 12px">Works with</h3>
+    <div class="sources"><span>Substack</span><span>Substack custom domains</span><span>Medium</span><span>Any RSS or Atom feed</span><span>Podcast feeds</span></div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap" style="max-width:820px">
+    <h2>Questions</h2>
+    <details><summary>Is it free?</summary><p>Yes. Cited runs the search; Claude writes the answer using your own Claude plan. There's a fair-use limit of 15 searches per minute.</p></details>
+    <details><summary>What does Cited see?</summary><p>Only what Claude sends in a search — the newsletter URL and the search question — never the rest of your conversation. See the <a href="https://github.com/drLIyer/Cited/blob/main/PRIVACY.md">privacy policy</a>.</p></details>
+    <details><summary>Does it read paywalled posts?</summary><p>No. Cited only searches public posts. If a newsletter is mostly paywalled, Cited will tell you it found little.</p></details>
+    <details><summary>How far back does it go?</summary><p>For Substack, up to the 200 most recent public posts. RSS and podcast feeds include whatever the feed lists — often the latest 10–50 items.</p></details>
+    <details><summary>What do the confidence levels mean?</summary><p>They measure how closely the best passages match your question. <b>High</b>: strong matches across several posts. <b>Moderate</b>: at least one good match. <b>Limited</b>: the newsletter barely covers it — Claude says so and flags anything from general knowledge.</p></details>
+    <details><summary>Is it open source?</summary><p>Yes, MIT-licensed, on <a href="https://github.com/drLIyer/Cited">GitHub</a>.</p></details>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/drLIyer/Cited">GitHub</a>
+    <a href="https://github.com/drLIyer/Cited/blob/main/PRIVACY.md">Privacy</a>
+    <a href="https://github.com/drLIyer/Cited/blob/main/LICENSE">MIT License</a>
+    <span>Cited is an independent project and isn't affiliated with Anthropic, Substack, or Medium.</span>
+  </div>
+</footer>
+<script src="/landing.js"></script>
+</body>
+</html>

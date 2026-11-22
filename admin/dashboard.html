@@ -74,6 +74,18 @@ button.primary { background: var(--navy); color: #fff; border-color: var(--navy)
 .error-box { color: var(--bad); margin-top: 10px; }
 .q { max-width: 520px; word-break: break-word; }
 .empty { color: var(--muted); padding: 8px 0; }
+:root { --chart: #3b5bdb; --grid: #e3e6ef; }
+@media (prefers-color-scheme: dark) { :root { --chart: #5c7cfa; --grid: #2a3460; } }
+.chart { position: relative; width: 100%; }
+.chart svg { display: block; width: 100%; height: 200px; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .bar { fill: var(--chart); }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .hit:hover + .bar, .chart .bar.on { opacity: .75; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--panel); color: var(--text);
+       border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12.5px;
+       box-shadow: 0 6px 20px rgba(0,0,0,.15); }
+.chg-up { color: var(--ok); } .chg-down { color: var(--bad); }
 .st-open { background: var(--bad); } .st-fixed { background: var(--ok); } .st-regressed { background: #8e44ad; }
 .fix-form { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .fix-form input { flex: 1 1 260px; font: inherit; border-radius: 8px; border: 1px solid var(--line);
@@ -113,6 +125,19 @@ button.primary { background: var(--navy); color: #fff; border-color: var(--navy)
   </section>
 
   <div class="tiles" id="tiles"></div>
+
+  <section class="panel" id="growth-panel">
+    <h2>Growth <span class="hint">Last 7 days vs the 7 before · daily searches over 30 days</span></h2>
+    <div class="tiles" id="growth-tiles" style="margin-bottom:12px"></div>
+    <div id="growth-chart" class="chart" role="img" aria-label="Daily searches, last 30 days"></div>
+    <div class="tip" id="growth-tip" hidden></div>
+    <details style="margin-top:10px"><summary class="muted">Show as table</summary>
+      <div class="table-wrap"><table id="growth-table"><thead><tr><th>Day</th><th class="num">Searches</th>
+        <th class="num">Newsletters</th><th class="num">Clients (approx.)</th></tr></thead><tbody></tbody></table></div>
+    </details>
+    <p class="muted" style="font-size:12.5px;margin:10px 0 0">Clients are approximate: claude.ai traffic arrives from
+      Anthropic's servers, so it undercounts claude.ai users (Claude Code users are counted). IPs are never stored.</p>
+  </section>
 
   <section class="panel">
     <h2>Health checks <span class="hint">What each check means and what to do when it isn't OK</span></h2>

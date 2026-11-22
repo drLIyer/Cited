@@ -101,7 +101,7 @@ def test_model_exception_in_log_triggers_reload(srv, monkeypatch):
     try:
         raise RuntimeError("CrossEncoder predict failed in pipeline.py")
     except RuntimeError:
-        logging.getLogger("cited").exception("search_substack failed (url=%s)", "https://x.example/feed")
+        logging.getLogger("cited").exception("search_newsletter failed (url=%s)", "https://x.example/feed")
     srv._HEALER.run_cycle({"checks": {}})
     assert calls == [1]
 
@@ -133,11 +133,11 @@ def test_unknown_errors_are_left_for_a_human(srv):
 async def test_repeat_attacker_is_blocked_and_ip_not_stored(srv, tmp_path):
     attacker = ctx_for("203.0.113.66")
     for _ in range(3):
-        await srv.search_substack("https://169.254.169.254/latest/feed", "x", ctx=attacker)
+        await srv.search_newsletter("https://169.254.169.254/latest/feed", "x", ctx=attacker)
     taken = srv._HEALER.run_cycle({"checks": {}})
     assert [t["action"] for t in taken] == ["block_ip"]
 
-    out = json.loads(await srv.search_substack("https://feeds.example/feed.xml", "x", ctx=attacker))
+    out = json.loads(await srv.search_newsletter("https://feeds.example/feed.xml", "x", ctx=attacker))
     assert "temporarily blocked" in out["error"]
     out = await srv.list_posts("https://feeds.example/feed.xml", ctx=ctx_for("198.51.100.1"))
     assert "blocked" not in out                       # other users unaffected
@@ -185,7 +185,7 @@ async def test_digest_content_and_privacy(srv, resend, mock_http):
     srv._history.save("https://a.substack.com", "my private question", "x", [], 0.3,
                       update_memory=False, level="low")
     await _fail_feed(srv, mock_http, 2)
-    await srv.search_substack("https://127.0.0.1/feed", "x")
+    await srv.search_newsletter("https://127.0.0.1/feed", "x")
     data = await srv._digest_data()
     subject, text, html_body = digest.build(data, "https://cited.example")
     assert subject.startswith("Cited daily digest")

@@ -33,6 +33,10 @@ To keep the service working and secure, the hosted service also keeps an error l
 
 If a client repeatedly tries attacks (for example, many requests for private network addresses) the service may block its IP address for up to 60 minutes. That IP address is held **only in the server's memory** for the length of the block; it is never written to disk, logs we keep, or reports.
 
+### Usage counts
+
+To count roughly how many different clients use the service each day, the server turns each IP address into a scrambled code using a secret key that exists only in memory and is replaced every day. The code can't be turned back into an IP address or linked across days, and the day's codes are deleted once the day ends — only the daily total is kept.
+
 ### Daily summary to the operator
 
 The operator receives a daily email summary of the service's health. It contains counts only (number of searches, errors, blocked attacks) and error descriptions — never your questions or IP address.
@@ -67,7 +71,7 @@ Logged searches are **automatically deleted after 90 days**. They may be deleted
 
 ## Running Cited yourself
 
-If you install Cited on your own computer (the local, "stdio" mode), your search history is stored only in a file on your machine and is never sent to us. If you enable the optional `ask_substack` tool, your questions and the matching excerpts are sent to Anthropic's API using **your own** API key, under Anthropic's terms.
+If you install Cited on your own computer (the local, "stdio" mode), your search history is stored only in a file on your machine and is never sent to us. If you enable the optional `ask_newsletter` tool, your questions and the matching excerpts are sent to Anthropic's API using **your own** API key, under Anthropic's terms.
 
 ## Children
 

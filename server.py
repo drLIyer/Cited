@@ -5,9 +5,9 @@ Cited — Precise, sourced answers from any Substack newsletter via MCP.
 Exposes three tools to any MCP-capable Claude client
 (Claude Desktop, Claude Code, Claude Cowork):
 
-  search_substack   — hybrid search, returns ranked excerpts for Claude to cite
+  search_newsletter   — hybrid search, returns ranked excerpts for Claude to cite
   list_posts        — list all public post titles + dates from a newsletter
-  ask_substack      — full RAG + server-side answer via Haiku (needs API key)
+  ask_newsletter      — full RAG + server-side answer via Haiku (needs API key)
 
 Usage — Claude Code:
 
@@ -23,7 +23,7 @@ Usage — Claude Desktop (~/Library/Application Support/Claude/claude_desktop_co
   }
 
 Env vars:
-  ANTHROPIC_API_KEY      — enables ask_substack tool (local/stdio mode only)
+  ANTHROPIC_API_KEY      — enables ask_newsletter tool (local/stdio mode only)
   CITED_TRANSPORT        — "stdio" (default) or "http" (hosted)
   CITED_ADMIN_TOKEN      — HTTP mode: enables GET /admin/history (Bearer auth)
                            and query logging
@@ -57,6 +57,13 @@ from typing import Optional
 from urllib.parse import parse_qs
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import ToolAnnotations
+
+
+def _read_only(title: str, open_world: bool = True) -> ToolAnnotations:
+    """Annotations for Cited's tools: all of them only read; none modify anything."""
+    return ToolAnnotations(title=title, read_only_hint=True, destructive_hint=False,
+                           idempotent_hint=True, open_world_hint=open_world)
 
 import fetcher as _fetcher
 import pipeline as _pipeline
@@ -65,6 +72,7 @@ import health as _health
 import events as _events
 import healer as _healer_mod
 import digest as _digest
+import metrics as _metrics
 from ratelimit import ClientRateLimit
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -89,6 +97,8 @@ _events.configure(enabled=_HTTP_MODE and bool(_ADMIN_TOKEN),
 if _HTTP_MODE:
     _events.install_capture()
 
+_metrics.configure(enabled=_events.enabled(), db_path=lambda: _history.DB_PATH)
+
 # Per-IP rate limit for searches in hosted mode (local stdio is never limited).
 _RATE = ClientRateLimit.from_env()
 
@@ -111,12 +121,12 @@ mcp = MCPServer(
         "Paywalled content is not included.\n\n"
 
         "## When to use it\n"
-        "Use search_substack when the user asks what a specific newsletter, author, "
+        "Use search_newsletter when the user asks what a specific newsletter, author, "
         "or podcast has said about a topic. It searches the source's own text, which "
         "can surface posts that general web search ranks poorly.\n\n"
 
         "## When the user gives a URL\n"
-        "Call search_substack directly with that URL and their question. "
+        "Call search_newsletter directly with that URL and their question. "
         "It accepts Substack URLs, Medium URLs, and any RSS or podcast feed URL.\n\n"
 
         "## When the user gives only an author or podcast name (no URL)\n"
@@ -124,15 +134,15 @@ mcp = MCPServer(
         '"{name} substack", "{name} newsletter", or "{name} podcast RSS feed". '
         "Pick the most likely result — prefer a direct feed URL (/feed, /rss, .xml), "
         "a custom domain, or a substack.com URL over social media pages.\n"
-        "2. Tell the user which URL you found, then call search_substack with it.\n\n"
+        "2. Tell the user which URL you found, then call search_newsletter with it.\n\n"
 
         "## When the user gives a podcast name\n"
         "Search for '{podcast name} RSS feed' to find the feed URL, "
-        "then call search_substack with it. Show notes and episode summaries are indexed.\n\n"
+        "then call search_newsletter with it. Show notes and episode summaries are indexed.\n\n"
 
         "## Composing answers\n"
         "Always cite the article or episode title and link for every claim. "
-        "Every search_substack result has a `confidence` with a level (High / Moderate / "
+        "Every search_newsletter result has a `confidence` with a level (High / Moderate / "
         "Limited coverage) and a best-match percentage. Tell the user the confidence in one "
         "short line, e.g. 'Confidence: High coverage (best match 71%)'. "
         "If the result is Limited coverage it includes a `disclaimer`: show that disclaimer "
@@ -241,6 +251,7 @@ def _rate_limit_error(ctx: Optional[Context]) -> Optional[str]:
     ip = _caller_ip(ctx)
     if ip is None:
         return None
+    _metrics.note_client(ip)
     blocked = _RATE.blocked_for(ip)
     if blocked:
         _events.record("blocked_ip", "A temporarily blocked client tried again.", level="INFO",
@@ -268,17 +279,19 @@ async def _save_history(url, question, answer, sources, cov: dict, tool) -> None
         log.exception("Failed to save history")  # never break a tool call
 
 
-# ── Tool 1: search_substack ────────────────────────────────────────────────────
+# ── Tool 1: search_newsletter ────────────────────────────────────────────────────
 
-@mcp.tool()
-async def search_substack(url: str, query: str, top_k: int = 5,
+@mcp.tool(title="Search a newsletter or podcast",
+          annotations=_read_only("Search a newsletter or podcast"))
+async def search_newsletter(url: str, query: str, top_k: int = 5,
                           ctx: Optional[Context] = None) -> str:
     """
     Search a newsletter or podcast feed for content relevant to a query.
 
     Accepts Substack URLs, Medium URLs, and any RSS or Atom feed URL (including
-    podcast feeds). Fetches all publicly available posts/episodes (cached for
-    1 hour), builds a hybrid BM25 + vector index, and reranks with a
+    podcast feeds). Fetches the source's public posts/episodes (Substack: up to
+    the 200 most recent; feeds: whatever the feed lists; cached for 1 hour),
+    builds a hybrid BM25 + vector index, and reranks with a
     cross-encoder. Returns ranked excerpts with titles, dates, URLs, and a
     confidence rating: High / Moderate / Limited coverage plus a best-match
     percentage. Limited coverage means the source probably doesn't cover the topic.
@@ -337,22 +350,23 @@ async def search_substack(url: str, query: str, top_k: int = 5,
         return json.dumps(result, indent=2)
 
     except _fetcher.NotSubstackError as exc:
-        _tool_problem("search_substack", url, exc, _caller_ip(ctx))
+        _tool_problem("search_newsletter", url, exc, _caller_ip(ctx))
         return json.dumps({"error": str(exc)})
     except _fetcher.FetchError as exc:
-        _tool_problem("search_substack", url, exc, _caller_ip(ctx))
+        _tool_problem("search_newsletter", url, exc, _caller_ip(ctx))
         return json.dumps({"error": f"Failed to fetch newsletter: {exc}"})
     except Exception as exc:
-        log.exception("search_substack failed (url=%s)", url)
+        log.exception("search_newsletter failed (url=%s)", url)
         return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
 # ── Tool 2: list_posts ─────────────────────────────────────────────────────────
 
-@mcp.tool()
+@mcp.tool(title="List a newsletter's posts",
+          annotations=_read_only("List a newsletter's posts"))
 async def list_posts(url: str, ctx: Optional[Context] = None) -> str:
     """
-    List all publicly available posts or episodes from a newsletter or feed.
+    List the public posts or episodes Cited can see for a newsletter or feed.
 
     Accepts Substack URLs, Medium URLs, and any RSS or Atom feed URL (including
     podcast feeds). Returns titles, publication dates, and URLs. Useful for
@@ -385,17 +399,18 @@ async def list_posts(url: str, ctx: Optional[Context] = None) -> str:
         return f"Unexpected error: {exc}"
 
 
-# ── Tool 3: ask_substack (only when API key is present) ────────────────────────
+# ── Tool 3: ask_newsletter (only when API key is present) ────────────────────────
 
-# ask_substack calls Haiku server-side — only available in local/stdio mode so
+# ask_newsletter calls Haiku server-side — only available in local/stdio mode so
 # remote users never consume the deployer's API credits. In HTTP mode, Claude
-# in the user's chat synthesizes the answer from search_substack excerpts instead.
+# in the user's chat synthesizes the answer from search_newsletter excerpts instead.
 if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
 
-    @mcp.tool()
-    async def ask_substack(url: str, question: str) -> str:
+    @mcp.tool(title="Ask a newsletter (answer written by Claude Haiku)",
+              annotations=_read_only("Ask a newsletter (answer written by Claude Haiku)"))
+    async def ask_newsletter(url: str, question: str) -> str:
         """
-        Ask a question about a Substack newsletter and get a direct cited answer.
+        Ask a question about a newsletter or podcast feed and get a direct cited answer.
 
         Fetches the newsletter, retrieves the most relevant excerpts, then calls
         Claude Haiku to generate a grounded answer with article citations.
@@ -404,7 +419,7 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
         Use this when the user wants a direct answer rather than raw excerpts.
 
         Args:
-            url:      Substack newsletter URL, e.g. https://aakashgupta.substack.com
+            url:      Newsletter or feed URL — Substack, Medium, or any RSS/podcast feed
             question: The question to answer from the newsletter content
         """
         import anthropic
@@ -465,7 +480,7 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
         except _fetcher.FetchError as exc:
             return json.dumps({"error": f"Failed to fetch newsletter: {exc}"})
         except Exception as exc:
-            log.exception("ask_substack error")
+            log.exception("ask_newsletter error")
             return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
@@ -528,12 +543,13 @@ def _format_history(rows: list[dict], header: str, with_meta: bool = True) -> st
 
 if not _HTTP_MODE:
 
-    @mcp.tool()
+    @mcp.tool(title="Get my Cited history",
+              annotations=_read_only("Get my Cited history", open_world=False))
     async def get_history(url: Optional[str] = None, limit: int = 20) -> str:
         """
         Retrieve your past questions and answers from Cited across all sessions.
 
-        Returns Q&As saved from previous search_substack and ask_substack calls,
+        Returns Q&As saved from previous search_newsletter and ask_newsletter calls,
         newest first. Use this at the start of a session to resume prior research
         without repeating searches you've already done.
 
@@ -548,7 +564,8 @@ if not _HTTP_MODE:
         return _format_history(
             rows, f"{len(rows)} past Q&As" + (f" for {url}" if url else "") + ":\n")
 
-    @mcp.tool()
+    @mcp.tool(title="Search my Cited history",
+              annotations=_read_only("Search my Cited history", open_world=False))
     async def search_my_history(query: str) -> str:
         """
         Search your Cited history by keyword across all past questions and answers.
@@ -571,7 +588,8 @@ elif _ADMIN_TOKEN and _ADMIN_MCP_TOOL:
     # Authorization: Bearer header, which keeps the token out of chat transcripts
     # and hides the tool from regular users. Enable with CITED_ADMIN_MCP_TOOL=1.
 
-    @mcp.tool()
+    @mcp.tool(title="[Admin] View all queries",
+              annotations=_read_only("[Admin] View all queries", open_world=False))
     async def admin_get_history(
         admin_token: str,
         url: Optional[str] = None,
@@ -581,8 +599,8 @@ elif _ADMIN_TOKEN and _ADMIN_MCP_TOOL:
         """
         [ADMIN ONLY] View all queries made to this Cited server across all users.
 
-        Requires the CITED_ADMIN_TOKEN set on the server. Every search_substack
-        and ask_substack call is logged; this tool retrieves that log.
+        Requires the CITED_ADMIN_TOKEN set on the server. Every search_newsletter
+        and ask_newsletter call is logged; this tool retrieves that log.
 
         Args:
             admin_token: The server's admin token (set via CITED_ADMIN_TOKEN env var).
@@ -669,14 +687,26 @@ _ADMIN_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-i
               "base-uri 'none'; form-action 'none'")
 
 
-async def _send_file(send, name: str, content_type: bytes, head: bool = False) -> None:
-    with open(os.path.join(_ADMIN_DIR, name), "rb") as f:
+_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+_WEB_FILES = {   # public landing page
+    "/":           ("web/index.html", b"text/html; charset=utf-8"),
+    "/landing.js": ("web/landing.js", b"text/javascript; charset=utf-8"),
+    "/icon.png":   (".claude-plugin/icon.png", b"image/png"),
+    "/favicon.ico": (".claude-plugin/icon.png", b"image/png"),
+}
+_WEB_CSP = ("default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'; "
+            "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+
+
+async def _send_file(send, name: str, content_type: bytes, head: bool = False,
+                     base: str = _ADMIN_DIR, csp: str = _ADMIN_CSP, cache: bytes = b"no-store") -> None:
+    with open(os.path.join(base, name), "rb") as f:
         body = f.read()
     await send({"type": "http.response.start", "status": 200, "headers": [
         [b"content-type", content_type],
         [b"content-length", str(len(body)).encode()],
-        [b"cache-control", b"no-store"],
-        [b"content-security-policy", _ADMIN_CSP.encode()],
+        [b"cache-control", cache],
+        [b"content-security-policy", csp.encode()],
         [b"x-frame-options", b"DENY"],
         [b"x-content-type-options", b"nosniff"],
         [b"referrer-policy", b"no-referrer"],
@@ -701,9 +731,11 @@ async def _admin_api(path: str, qs: dict) -> dict:
         security = await asyncio.to_thread(_events.security_summary)
         fixes = await asyncio.to_thread(_events.fix_stats, 30)
         autofix = await asyncio.to_thread(_HEALER.snapshot, _RATE.blocked())
+        growth = (await asyncio.to_thread(_metrics.growth, _history.DB_PATH, 30)
+                  if _LOG_QUERIES else None)
         return {"health": health, "searches": searches, "events": events_summary,
                 "security": security, "fixes": fixes, "autofix": autofix,
-                "digest": _digest.status_for_dashboard()}
+                "digest": _digest.status_for_dashboard(), "growth": growth}
     if path == "/admin/api/searches":
         if not _LOG_QUERIES:
             return {"enabled": False, "searches": []}
@@ -838,6 +870,13 @@ def build_http_app(monitor_interval: Optional[float] = None):
             if method not in ("GET", "HEAD"):
                 await _send_json(send, 405, {"error": "Method not allowed"})
                 return
+            accept = dict((k.decode("latin-1").lower(), v.decode("latin-1"))
+                          for k, v in scope.get("headers", [])).get("accept", "")
+            if path == "/" and "text/html" in accept:
+                await _send_file(send, "web/index.html", b"text/html; charset=utf-8",
+                                 method == "HEAD", base=_ROOT_DIR, csp=_WEB_CSP,
+                                 cache=b"public, max-age=300")
+                return
             if path == "/":
                 status, payload = 200, {
                     "name": "Cited",
@@ -854,6 +893,13 @@ def build_http_app(monitor_interval: Optional[float] = None):
                     status, payload = 503, {"status": "unavailable",
                                             "error": f"{type(exc).__name__}: {exc}"}
             await _send_json(send, status, payload, head=(method == "HEAD"))
+        elif path in _WEB_FILES and path != "/":
+            if method not in ("GET", "HEAD"):
+                await _send_json(send, 405, {"error": "Method not allowed"})
+                return
+            name, ctype = _WEB_FILES[path]
+            await _send_file(send, name, ctype, method == "HEAD", base=_ROOT_DIR, csp=_WEB_CSP,
+                             cache=b"public, max-age=3600")
         elif path in ("/admin", "/admin/app.js"):
             if method not in ("GET", "HEAD"):
                 await _send_json(send, 405, {"error": "Method not allowed"})

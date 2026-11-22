@@ -264,8 +264,8 @@ class HealthChecker:
             names = await self._list_tools()
         except Exception as exc:
             return {"status": ERROR, "detail": f"{type(exc).__name__}: {exc}"}, []
-        if "search_substack" not in names:
-            return {"status": ERROR, "detail": "search_substack tool is not registered."}, names
+        if "search_newsletter" not in names:
+            return {"status": ERROR, "detail": "search_newsletter tool is not registered."}, names
         return {"status": OK, "count": len(names)}, names
 
     async def _check_history_db(self) -> dict:

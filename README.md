@@ -1,9 +1,30 @@
-# Cited
-Precise, sourced answers from any Substack newsletter, Medium publication, or RSS/podcast feed — an MCP server for Claude.
+<p align="center"><img src=".claude-plugin/icon.png" width="96" alt="Cited"></p>
 
-Cited searches a source's public posts (hybrid BM25 + vector search, cross-encoder reranking) and returns ranked excerpts with titles, dates, and links so Claude can cite them.
+# Cited
+
+**Ask any newsletter or podcast. Get answers you can check.**
+
+Cited lets Claude search a newsletter's or podcast's own posts and answer with **exact quotes, links to the source**, and an **honest confidence rating** — so you know when an answer is grounded and when it isn't. Works with Substack (including custom domains), Medium, and any RSS or podcast feed.
+
+<p align="center"><img src="docs/demo.gif" width="560" alt="Claude answering with quotes from a newsletter, a High-confidence badge, then a Limited-coverage disclaimer for an off-topic question"><br>
+<sub>Illustration with a fictional newsletter. Real answers quote and link real posts.</sub></p>
+
+**Website:** <https://cited-7bys.onrender.com> · **Add to claude.ai:** `https://cited-7bys.onrender.com/mcp`
+
+### Why use it instead of plain Claude?
+
+| | Claude on its own | Claude + Cited |
+|---|---|---|
+| Finds older posts | Only what web search ranks | Searches the newsletter's own posts (up to 200) |
+| Sources | Sometimes, from search snippets | Exact quote, title, date and link for every claim |
+| Knows when it doesn't know | Rarely says | High / Moderate / Limited confidence + a disclaimer when coverage is limited |
+| Podcasts | Hit or miss | Searches show notes via the RSS feed |
+
+Under the hood: hybrid BM25 + vector search with cross-encoder reranking over the source's public posts.
 
 ## Install
+
+**claude.ai (web, desktop, mobile):** Customize → Connectors → **+ Add** → **Add custom connector** → name it *Cited*, URL `https://cited-7bys.onrender.com/mcp`, **No sign in** → **Add**. Then switch it on from the **+** menu in a chat.
 
 **Claude Code (plugin):**
 
@@ -18,7 +39,6 @@ claude plugin marketplace add drLIyer/Cited
 claude plugin install cited@cited-plugins
 ```
 
-**claude.ai (custom connector):** Customize → Connectors → **+ Add** → **Add custom connector**, URL `https://cited-7bys.onrender.com/mcp`, no sign-in.
 
 ## Coverage
 
