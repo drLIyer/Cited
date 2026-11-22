@@ -63,6 +63,8 @@ import pipeline as _pipeline
 import history as _history
 import health as _health
 import events as _events
+import healer as _healer_mod
+import digest as _digest
 from ratelimit import ClientRateLimit
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -89,6 +91,13 @@ if _HTTP_MODE:
 
 # Per-IP rate limit for searches in hosted mode (local stdio is never limited).
 _RATE = ClientRateLimit.from_env()
+
+# Auto-fix agent: safe, verified, remembered fixes (see healer.py).
+_HEALER = _healer_mod.Healer(
+    enabled=_events.enabled() and os.getenv("CITED_AUTOHEAL", "1") != "0",
+    db_path=lambda: _history.DB_PATH,
+    block_ip=_RATE.block,
+)
 
 mcp = MCPServer(
     "Cited",
@@ -194,36 +203,54 @@ def _confidence_payload(cov: dict) -> dict:
     }
 
 
-def _tool_problem(tool: str, url: str, exc: Exception) -> None:
+def _tool_problem(tool: str, url: str, exc: Exception, ip: Optional[str] = None) -> None:
     """Record an expected tool failure (bad URL, unreachable feed) in the error log."""
     if isinstance(exc, _fetcher.UnsafeURLError):
         kind, level = "blocked_url", "WARNING"
     elif isinstance(exc, _fetcher.UnsafeContentError):
         kind, level = "blocked_content", "WARNING"
+    elif isinstance(exc, _fetcher.SourcePausedError):
+        kind, level = "source_paused", "INFO"
     elif isinstance(exc, _fetcher.NotSubstackError):
         kind, level = "invalid_source", "INFO"
     else:
         kind, level = "fetch_failed", "WARNING"
+    if kind in ("blocked_url", "blocked_content"):
+        _HEALER.note_offense(ip, kind)
     _events.record(kind, str(exc), level=level, source=tool,
                    context={"tool": tool, "url": url[:500]},
                    group_key=f"{kind}|{_fetcher._host(url)}|{type(exc).__name__}")
 
 
-def _rate_limit_error(ctx: Optional[Context]) -> Optional[str]:
-    """Return an error message if this caller is over the search rate limit."""
+def _caller_ip(ctx: Optional[Context]) -> Optional[str]:
+    """Client IP of the MCP request (hosted mode only)."""
     if not _HTTP_MODE or ctx is None:
         return None
     try:
         request = ctx.request_context.request
     except Exception:
-        request = None
+        return None
     if request is None:
         return None
     peer = request.client.host if getattr(request, "client", None) else None
-    ip = _RATE.client_ip(peer, request.headers.get("x-forwarded-for"))
+    return _RATE.client_ip(peer, request.headers.get("x-forwarded-for"))
+
+
+def _rate_limit_error(ctx: Optional[Context]) -> Optional[str]:
+    """Return an error message if this caller is blocked or over the search rate limit."""
+    ip = _caller_ip(ctx)
+    if ip is None:
+        return None
+    blocked = _RATE.blocked_for(ip)
+    if blocked:
+        _events.record("blocked_ip", "A temporarily blocked client tried again.", level="INFO",
+                       source="healer", group_key="blocked_ip")
+        return ("This client is temporarily blocked after repeated abuse. "
+                f"Try again in {max(1, round(blocked / 60))} minute(s).")
     allowed, limit, _remaining, retry = _RATE.check(ip)
     if allowed:
         return None
+    _HEALER.note_offense(ip, "rate_limited")
     log.info("Rate limit hit for %s (limit %d/min)", ip, limit)
     _events.record("rate_limited", f"A client hit the rate limit ({limit} searches/min).",
                    level="INFO", source="ratelimit", group_key="rate_limited")
@@ -310,10 +337,10 @@ async def search_substack(url: str, query: str, top_k: int = 5,
         return json.dumps(result, indent=2)
 
     except _fetcher.NotSubstackError as exc:
-        _tool_problem("search_substack", url, exc)
+        _tool_problem("search_substack", url, exc, _caller_ip(ctx))
         return json.dumps({"error": str(exc)})
     except _fetcher.FetchError as exc:
-        _tool_problem("search_substack", url, exc)
+        _tool_problem("search_substack", url, exc, _caller_ip(ctx))
         return json.dumps({"error": f"Failed to fetch newsletter: {exc}"})
     except Exception as exc:
         log.exception("search_substack failed (url=%s)", url)
@@ -348,10 +375,10 @@ async def list_posts(url: str, ctx: Optional[Context] = None) -> str:
         return "\n".join(lines)
 
     except _fetcher.NotSubstackError as exc:
-        _tool_problem("list_posts", url, exc)
+        _tool_problem("list_posts", url, exc, _caller_ip(ctx))
         return f"Error: {exc}"
     except _fetcher.FetchError as exc:
-        _tool_problem("list_posts", url, exc)
+        _tool_problem("list_posts", url, exc, _caller_ip(ctx))
         return f"Failed to fetch newsletter: {exc}"
     except Exception as exc:
         log.exception("list_posts failed (url=%s)", url)
@@ -673,8 +700,10 @@ async def _admin_api(path: str, qs: dict) -> dict:
         events_summary = await asyncio.to_thread(_events.summary, 24)
         security = await asyncio.to_thread(_events.security_summary)
         fixes = await asyncio.to_thread(_events.fix_stats, 30)
+        autofix = await asyncio.to_thread(_HEALER.snapshot, _RATE.blocked())
         return {"health": health, "searches": searches, "events": events_summary,
-                "security": security, "fixes": fixes}
+                "security": security, "fixes": fixes, "autofix": autofix,
+                "digest": _digest.status_for_dashboard()}
     if path == "/admin/api/searches":
         if not _LOG_QUERIES:
             return {"enabled": False, "searches": []}
@@ -693,10 +722,21 @@ async def _admin_api(path: str, qs: dict) -> dict:
 
 
 async def _admin_action(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/admin/api/digest/test":
+        if not _digest.config()["enabled"]:
+            return 400, {"error": "Digest isn't configured: set CITED_DIGEST_TO and RESEND_API_KEY "
+                                  "(or SMTP_HOST) on the server."}
+        try:
+            return 200, {"ok": True, "result": await _send_digest(mark=False)}
+        except Exception as exc:
+            log.warning("Test digest failed: %s", exc)
+            return 502, {"error": f"Sending failed: {exc}"}
     fp = str(body.get("fingerprint") or "")
     if not fp or len(fp) > 64:
         return 400, {"error": "fingerprint is required"}
-    if path == "/admin/api/resolve":
+    if path == "/admin/api/forget":
+        ok = await asyncio.to_thread(_HEALER.forget, fp)
+    elif path == "/admin/api/resolve":
         ok = await asyncio.to_thread(_events.resolve, fp, str(body.get("note") or ""), "admin")
     elif path == "/admin/api/reopen":
         ok = await asyncio.to_thread(_events.reopen, fp)
@@ -734,10 +774,42 @@ async def _health_monitor(interval: float) -> None:
     is looking at the dashboard."""
     while True:
         try:
-            await _HEALTH.report(len(_pipeline._EMBED_CACHE))
+            _status, report = await _HEALTH.report(len(_pipeline._EMBED_CACHE))
+            await asyncio.to_thread(_HEALER.run_cycle, report)
         except Exception:
             log.exception("Background health check failed")
+        try:
+            if _events.enabled() and await asyncio.to_thread(_digest.is_due, _history.DB_PATH):
+                await _send_digest()
+        except Exception:
+            log.exception("Daily digest failed")
         await asyncio.sleep(interval)
+
+
+async def _digest_data() -> dict:
+    _, health = await _HEALTH.report(len(_pipeline._EMBED_CACHE))
+    return {
+        "health": health,
+        "searches": await asyncio.to_thread(_history.stats, 24) if _LOG_QUERIES else None,
+        "security": await asyncio.to_thread(_events.security_summary),
+        "fixes": await asyncio.to_thread(_events.fix_stats, 30),
+        "fixes_24h": await asyncio.to_thread(_events.fix_stats, 1),
+        "autofix": await asyncio.to_thread(_HEALER.snapshot, _RATE.blocked()),
+        "errors": await asyncio.to_thread(_events.groups, 24, None, None, 300),
+    }
+
+
+async def _send_digest(mark: bool = True) -> str:
+    """Build and send the digest. Marks today as sent (unless it's a test)."""
+    from datetime import datetime, timezone
+    data = await _digest_data()
+    subject, text, html_body = _digest.build(data, _digest.config()["public_url"])
+    result = await asyncio.to_thread(_digest.send, subject, text, html_body)
+    if mark:
+        await asyncio.to_thread(_digest.mark_sent, _history.DB_PATH,
+                                datetime.now(timezone.utc).date().isoformat())
+    log.info("Daily digest %s", result)
+    return result
 
 
 def build_http_app(monitor_interval: Optional[float] = None):
@@ -794,7 +866,8 @@ def build_http_app(monitor_interval: Optional[float] = None):
             else:
                 await _send_file(send, "app.js", b"text/javascript; charset=utf-8", method == "HEAD")
         elif path and path.startswith("/admin/api/"):
-            is_action = path in ("/admin/api/resolve", "/admin/api/reopen")
+            is_action = path in ("/admin/api/resolve", "/admin/api/reopen", "/admin/api/forget",
+                                 "/admin/api/digest/test")
             if method != ("POST" if is_action else "GET"):
                 await _send_json(send, 405, {"error": "Method not allowed"})
                 return
@@ -802,8 +875,15 @@ def build_http_app(monitor_interval: Optional[float] = None):
                        for k, v in scope.get("headers", [])}
             auth  = headers.get("authorization", "")
             token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+            client = scope.get("client") or (None, None)
+            ip = _RATE.client_ip(client[0], headers.get("x-forwarded-for"))
+            if _ADMIN_TOKEN and _RATE.blocked_for(ip):
+                await _send_json(send, 403, {"error": "Temporarily blocked."})
+                return
             err = _check_admin(token)
             if err:
+                if _ADMIN_TOKEN and "Invalid" in err:
+                    _HEALER.note_offense(ip, "admin_auth_failed")
                 status = 404 if not _ADMIN_TOKEN else (429 if "Too many" in err else 401)
                 await _send_json(send, status, {"error": err})
                 return

@@ -93,6 +93,29 @@ class ClientRateLimit:
         self.shared_nets    = _parse_cidrs(shared_cidrs)
         self.per_ip  = RateLimiter(per_min, clock=clock)
         self.shared  = RateLimiter(shared_per_min, clock=clock)
+        self._clock  = clock
+        self._blocked: dict[str, float] = {}   # ip → monotonic time the block ends
+
+    # Temporary blocks (set by the auto-fix agent; memory only, never persisted)
+    def block(self, ip: str, seconds: float) -> None:
+        self._blocked[ip] = self._clock() + seconds
+
+    def unblock(self, ip: str) -> None:
+        self._blocked.pop(ip, None)
+
+    def blocked_for(self, ip: str) -> int:
+        """Seconds left on a block for this IP (0 if not blocked)."""
+        until = self._blocked.get(ip)
+        if until is None:
+            return 0
+        left = until - self._clock()
+        if left <= 0:
+            del self._blocked[ip]
+            return 0
+        return max(1, math.ceil(left))
+
+    def blocked(self) -> dict[str, int]:
+        return {ip: s for ip in list(self._blocked) if (s := self.blocked_for(ip))}
 
     @classmethod
     def from_env(cls) -> "ClientRateLimit":

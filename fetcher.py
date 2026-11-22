@@ -78,6 +78,33 @@ class UnsafeContentError(FetchError):
     """The source returned content we refuse to process (XML attack, oversized body)."""
 
 
+class SourcePausedError(FetchError):
+    """Fetching from this host is paused for a while after repeated failures."""
+
+
+# host → unix time until which fetching is paused (set by the auto-fix agent)
+_PAUSED: dict[str, float] = {}
+
+
+def pause_host(host: str, seconds: float) -> None:
+    _PAUSED[host.lower()] = time.time() + seconds
+
+
+def unpause_host(host: str) -> None:
+    _PAUSED.pop(host.lower(), None)
+
+
+def paused_hosts() -> dict[str, float]:
+    now = time.time()
+    for h in [h for h, t in _PAUSED.items() if t <= now]:
+        del _PAUSED[h]
+    return dict(_PAUSED)
+
+
+def invalidate_key(key: str) -> None:
+    _CACHE.pop(key, None)
+
+
 @dataclass
 class Post:
     title: str
@@ -608,6 +635,14 @@ async def get_posts(url: str) -> list[Post]:
     source = _detect_source(url)   # raises NotSubstackError for LinkedIn etc.
     key    = parse_subdomain(url)
     await _check_url(url)          # reject unsafe URLs before touching the cache
+
+    host = _host(url)
+    until = paused_hosts().get(host)
+    if until:
+        mins = max(1, round((until - time.time()) / 60))
+        raise SourcePausedError(
+            f"Fetching from {host} is paused for about {mins} more minute(s) after repeated "
+            "failures. Please try again later.")
 
     cached = _CACHE.get(key)
     if cached and time.time() - cached[1] < CACHE_TTL:

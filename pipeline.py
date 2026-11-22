@@ -86,6 +86,15 @@ def models_loaded() -> bool:
     return _embed_model is not None and _reranker is not None
 
 
+def reload_models() -> None:
+    """Drop and reload both models (used by the auto-fix agent)."""
+    global _embed_model, _reranker
+    with _MODEL_LOCK:
+        _embed_model = None
+        _reranker = None
+    prewarm()
+
+
 def prewarm() -> None:
     """Load both models into memory. Call at server startup so the first user query is fast."""
     log.info("Pre-warming models …")

@@ -29,6 +29,14 @@ Our hosting provider (Render) also keeps standard server logs. These include the
 
 To keep the service working and secure, the hosted service also keeps an error log. It records technical problems (for example "couldn't fetch this feed"), blocked attacks (for example a request to fetch a private network address), and rate-limit hits. These entries may include the newsletter or feed URL involved and the error message. They **do not include your question or your IP address**. Error log entries are deleted automatically after 30 days.
 
+### Blocking abuse
+
+If a client repeatedly tries attacks (for example, many requests for private network addresses) the service may block its IP address for up to 60 minutes. That IP address is held **only in the server's memory** for the length of the block; it is never written to disk, logs we keep, or reports.
+
+### Daily summary to the operator
+
+The operator receives a daily email summary of the service's health. It contains counts only (number of searches, errors, blocked attacks) and error descriptions — never your questions or IP address.
+
 ## How we use it
 
 - To answer your search request.

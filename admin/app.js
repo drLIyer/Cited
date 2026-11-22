@@ -58,7 +58,8 @@ function renderOverview(o) {
     `Version ${h.version}${h.commit ? ` (${h.commit})` : ""} · up ${fmtUptime(h.uptime_seconds)} · ` +
     `models: ${h.prewarm.state}${h.prewarm.error ? ` (${h.prewarm.error})` : ""}`;
 
-  const st = o.searches, ev = o.events, sec = o.security || {}, fx = o.fixes || {};
+  const st = o.searches, ev = o.events, sec = o.security || {}, fx = o.fixes || {}, af = o.autofix || {};
+  const af24 = af.stats_24h || {};
   const errs24 = ((ev.by_level || {}).ERROR || 0) + ((ev.by_level || {}).CRITICAL || 0);
   const warns24 = (ev.by_level || {}).WARNING || 0;
   const mem = h.checks.memory || {};
@@ -71,6 +72,7 @@ function renderOverview(o) {
     ["Bugs fixed (30d)", fx.enabled ? fx.fixed : "—",
       fx.enabled ? `${fx.holding} holding · ${fx.regressed} regressed${fx.auto_fixed ? ` · ${fx.auto_fixed} auto` : ""}` : ""],
     ["Threats blocked (24h)", sec.enabled ? sec.total_24h : "—", sec.enabled ? `${sec.total_30d} in 30 days` : ""],
+    ["Auto-fixes (24h)", af.enabled ? af24.applied : "off", af.enabled ? `${af24.worked} worked · ${af24.learned_fixes} remembered` : "set CITED_ADMIN_TOKEN"],
     ["Memory", mem.rss_mb != null ? `${Math.round(mem.rss_mb)} MB` : "—", mem.limit_mb ? `of ${Math.round(mem.limit_mb)} MB (${mem.used_pct}%)` : "no container limit found"],
     ["Uptime", fmtUptime(h.uptime_seconds), `since ${new Date(h.started_at).toLocaleString()}`],
   ];
@@ -93,6 +95,56 @@ function renderOverview(o) {
   document.querySelector("#checks tbody").replaceChildren(...rows);
   renderConfidence(st);
   renderThreats(sec);
+  renderAutofix(af);
+  renderDigest(o.digest || {});
+}
+
+const RESULT_LABEL = { applied: "Applied", worked: "Worked", failed: "Didn't work", skipped: "Skipped" };
+
+function renderAutofix(af) {
+  const hint = document.getElementById("af-hint"), sum = document.getElementById("af-summary");
+  const pb = document.querySelector("#playbook tbody"), rec = document.querySelector("#af-recent tbody");
+  if (!af.enabled) {
+    hint.textContent = "Off";
+    sum.replaceChildren(el("div", { class: "empty" }, "The auto-fix agent is off (needs CITED_ADMIN_TOKEN; CITED_AUTOHEAL=0 disables it)."));
+    pb.replaceChildren(); rec.replaceChildren(); return;
+  }
+  hint.textContent = `Safe fixes only — never changes code. Last check ${af.last_cycle ? ago(af.last_cycle) : "pending"}.`;
+  const s = af.stats_24h || {}, s30 = af.stats_30d || {};
+  sum.replaceChildren(...[
+    el("div", {}, `Last 24 h: ${s.applied} applied · ${s.worked} worked · ${s.failed} didn't work · ${s.skipped} skipped. `,
+       `Last 30 days: ${s30.applied} applied, ${s30.worked} worked.`),
+    af.paused_sources.length ? el("div", { class: "muted" }, "Paused feeds: ",
+      af.paused_sources.map((p) => `${p.host} (${Math.max(1, Math.round(p.seconds_left / 60))} min left)`).join(", ")) : null,
+    af.blocked_clients ? el("div", { class: "muted" }, `${af.blocked_clients} client(s) temporarily blocked.`) : null,
+    af.pending.length ? el("div", { class: "muted" }, `Checking whether ${af.pending.length} fix(es) worked…`) : null,
+  ].filter(Boolean));
+  pb.replaceChildren(...(af.playbook.length ? af.playbook.map((p) => {
+    const forget = el("button", { type: "button" }, "Forget");
+    forget.addEventListener("click", async () => {
+      if (!confirm("Forget this fix? The agent will diagnose this error from scratch next time.")) return;
+      await api("/admin/api/forget", { fingerprint: p.fingerprint }); await load();
+    });
+    return el("tr", {},
+      el("td", { class: "q" }, p.message || p.fingerprint),
+      el("td", {}, p.action_name, p.trusted ? "" : el("div", { class: "muted" }, "not trusted yet")),
+      el("td", { class: "num" }, p.successes), el("td", { class: "num" }, p.failures),
+      el("td", {}, p.last_applied ? when(p.last_applied) : "—"),
+      el("td", {}, forget));
+  }) : [el("tr", {}, el("td", { colspan: 6, class: "empty" }, "No fixes learned yet."))]));
+  rec.replaceChildren(...(af.recent.length ? af.recent.map((a) => el("tr", {},
+    el("td", {}, when(a.ts)),
+    el("td", {}, a.action_name, a.from_playbook ? el("div", { class: "muted" }, "from memory") : null),
+    el("td", { class: "q" }, a.problem, a.detail ? el("div", { class: "muted" }, a.detail) : null),
+    el("td", {}, el("span", { class: `pill r-${a.result}` }, RESULT_LABEL[a.result] || a.result))))
+    : [el("tr", {}, el("td", { colspan: 4, class: "empty" }, "No actions yet."))]));
+}
+
+function renderDigest(d) {
+  document.getElementById("digest-status").textContent = d.enabled
+    ? `On — sent daily around ${String(d.hour_utc).padStart(2, "0")}:00 UTC via ${d.provider === "resend" ? "Resend" : "SMTP"}.`
+    : "Off — set CITED_DIGEST_TO plus RESEND_API_KEY (or SMTP_HOST/SMTP_USER/SMTP_PASSWORD) on the server.";
+  document.getElementById("digest-test").disabled = !d.enabled;
 }
 
 function renderThreats(sec) {
@@ -244,6 +296,16 @@ document.getElementById("login-form").addEventListener("submit", (ev) => {
 document.getElementById("signout").addEventListener("click", () => signOut());
 document.getElementById("refresh").addEventListener("click", load);
 document.getElementById("auto").addEventListener("change", schedule);
+document.getElementById("digest-test").addEventListener("click", async () => {
+  const out = document.getElementById("digest-result");
+  out.textContent = "Sending…";
+  try {
+    const r = await fetch("/admin/api/digest/test", { method: "POST", headers: {
+      Authorization: `Bearer ${getToken()}`, "Content-Type": "application/json" }, body: "{}" });
+    const body = await r.json();
+    out.textContent = r.ok ? `Sent (${body.result}).` : body.error;
+  } catch (e) { out.textContent = `Failed: ${e.message}`; }
+});
 for (const id of ["search-filter", "err-category", "err-state", "err-hours"]) document.getElementById(id).addEventListener("change", load);
 
 if (getToken()) { load().then(schedule); } else { signOut(); }

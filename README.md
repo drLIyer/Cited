@@ -34,7 +34,12 @@ Substack: up to the 200 most recent public posts. Medium and RSS/podcast feeds: 
 | Confidence limits | ThinkWithMe defaults: High = best ≥ 0.62 & avg ≥ 0.59, Moderate = best ≥ 0.55 (`CITED_CONF_*`) |
 | Persistent data | Set `CITED_HISTORY_DB` to a path on a persistent disk, or history and the error log reset on every deploy |
 
+| Auto-fix agent | On by default with an admin token; `CITED_AUTOHEAL=0` turns it off |
+| Daily digest | `CITED_DIGEST_TO` + `RESEND_API_KEY` & `CITED_DIGEST_FROM` (or `SMTP_HOST`/`SMTP_USER`/`SMTP_PASSWORD`); `CITED_DIGEST_HOUR_UTC` (default 13) |
+
 The server runs a background health check every 60 s (`CITED_HEALTH_MONITOR_SECONDS`) and logs every warning, error, crash, and blocked threat for the dashboard.
+
+**Auto-fix agent.** After each health check, the agent looks at new errors and applies *safe* fixes only — reload the search models, clear one feed's cache, pause a failing feed for 15 min, free memory, or block an attacking IP for 60 min. It never changes code. It checks whether each fix worked, remembers the ones that did, and re-applies them immediately if the same error returns. Every action has an hourly cap and appears on the dashboard; a fix that didn't work is flagged for you.
 
 ## Privacy
 
