@@ -23,3 +23,7 @@ claude plugin install cited@cited-plugins
 ## Coverage
 
 Substack: up to the 200 most recent public posts. Medium and RSS/podcast feeds: whatever the feed publishes (often the latest 10–50 items). Each post is indexed up to its first 15,000 characters. Paywalled content is not included. Only `https://` sources are fetched.
+
+## Privacy
+
+The hosted service logs the newsletter URL and question for each search (deleted after 90 days, never sold). Local installs keep history only on your machine. See [PRIVACY.md](PRIVACY.md).

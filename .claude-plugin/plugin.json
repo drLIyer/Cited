@@ -7,5 +7,15 @@
   },
   "homepage": "https://github.com/drliyer/cited",
   "repository": "https://github.com/drliyer/cited",
-  "keywords": ["substack", "newsletter", "rss", "podcast", "medium", "search", "citations", "rag"]
+  "keywords": [
+    "substack",
+    "newsletter",
+    "rss",
+    "podcast",
+    "medium",
+    "search",
+    "citations",
+    "rag"
+  ],
+  "privacyPolicyUrl": "https://github.com/drLIyer/Cited/blob/main/PRIVACY.md"
 }

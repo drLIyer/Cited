@@ -21,6 +21,10 @@ from typing import Optional
 _HERE    = Path(__file__).parent
 DB_PATH  = Path(os.getenv("CITED_HISTORY_DB", str(_HERE / "history.db")))
 
+# Entries older than this are deleted automatically (enforces the retention
+# period promised in PRIVACY.md). 0 disables pruning.
+RETENTION_DAYS = int(os.getenv("CITED_HISTORY_RETENTION_DAYS", "90"))
+
 # Claude auto-memory: ~/.claude/projects/<home-slug>/memory/
 # Slug = home path with / replaced by -  (e.g. /Users/liyer_1 → -Users-liyer-1)
 _home        = Path.home()
@@ -73,6 +77,9 @@ def save(url: str, question: str, answer: str,
          json.dumps(sources), round(confidence, 3), tool),
     )
     row_id = cur.lastrowid
+    if RETENTION_DAYS > 0:
+        db.execute("DELETE FROM history WHERE ts < ?",
+                   (time.time() - RETENTION_DAYS * 86400,))
     db.commit()
     db.close()
     if update_memory:

@@ -32,6 +32,7 @@ Env vars:
   CITED_ADMIN_MCP_TOOL   — "1" to also expose admin_get_history as an MCP tool
                            (off by default: the token would appear in chat transcripts)
   CITED_HISTORY_DB       — path to the SQLite history file
+  CITED_HISTORY_RETENTION_DAYS — delete history older than N days (default 90; 0 = keep)
   CITED_ALLOW_PRIVATE_URLS — "1" to allow fetching private/local addresses (dev only)
   CITED_USE_PROXY        — "1" to honor HTTPS_PROXY (disables connect-time DNS pinning)
 

@@ -85,3 +85,15 @@ def test_history_like_wildcards_escaped(monkeypatch, tmp_path):
     assert len(h.keyword_search("%")) == 1
     assert len(h.keyword_search("_")) == 0
     assert len(h.keyword_search("100%")) == 1
+
+
+def test_history_retention_prunes_old_rows(monkeypatch, tmp_path):
+    import time as _t
+    h = _history(monkeypatch, tmp_path)
+    monkeypatch.setattr(h, "RETENTION_DAYS", 90)
+    real = _t.time()
+    monkeypatch.setattr(h.time, "time", lambda: real - 91 * 86400)
+    h.save("https://x.substack.com", "old question", "a", [], 0.5, update_memory=False)
+    monkeypatch.setattr(h.time, "time", lambda: real)
+    h.save("https://x.substack.com", "new question", "a", [], 0.5, update_memory=False)
+    assert [r["question"] for r in h.get()] == ["new question"]
