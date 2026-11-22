@@ -4,12 +4,19 @@ Supports *.substack.com, custom Substack domains, and medium.com publications.
 Caches per-source key for CACHE_TTL seconds.
 
 All outbound requests go through `_get`, which:
-  * only allows http/https,
+  * HTTPS only — a pasted http:// URL is upgraded to https:// before any
+    request, and redirects to plain http:// are refused,
   * refuses hosts that resolve to private, loopback, link-local or otherwise
     non-public addresses (SSRF protection; override with CITED_ALLOW_PRIVATE_URLS=1
     for local development),
   * re-validates every redirect hop,
+  * pins each TCP connection to an address that was validated at connect
+    time (closes the DNS-rebinding gap between "check" and "connect"),
   * caps the response size (CITED_MAX_FETCH_BYTES, default 10 MB).
+
+Outbound proxies from the environment (HTTPS_PROXY etc.) are ignored by
+default, because a proxy resolves DNS itself and would defeat pinning. Set
+CITED_USE_PROXY=1 to use them; then only the pre-request checks apply.
 
 Feeds are parsed with defusedxml to block entity-expansion attacks.
 
@@ -28,6 +35,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit
 
+import httpcore
 import httpx
 from defusedxml import DefusedXmlException
 from defusedxml.ElementTree import ParseError as _XMLParseError
@@ -41,6 +49,7 @@ POST_CHARS     = int(os.getenv("CITED_POST_CHARS", "15000"))
 MAX_FETCH_BYTES = int(os.getenv("CITED_MAX_FETCH_BYTES", str(10 * 1024 * 1024)))
 MAX_REDIRECTS  = 5
 ALLOW_PRIVATE  = os.getenv("CITED_ALLOW_PRIVATE_URLS") == "1"
+USE_PROXY      = os.getenv("CITED_USE_PROXY") == "1"
 USER_AGENT     = "Mozilla/5.0 (compatible; Cited/1.0; +https://github.com/drliyer/cited)"
 
 _CACHE: dict[str, tuple[list, float]] = {}
@@ -87,39 +96,90 @@ async def _resolve(host: str, port: int) -> list[str]:
     return [info[4][0] for info in infos]
 
 
-async def _check_url(url: str) -> None:
-    """Raise UnsafeURLError unless url is http(s) and its host resolves to public IPs only."""
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise UnsafeURLError(f"Only http(s) URLs are supported — got: {url}")
-    host = parts.hostname
-    if not host:
-        raise UnsafeURLError(f"URL has no host: {url}")
-    if ALLOW_PRIVATE:
-        return
+_PRIVATE_MSG = "URLs pointing at private or local addresses are not allowed."
 
+
+async def _resolve_public(host: str, port: int) -> list[str]:
+    """Resolve host and return its addresses, raising UnsafeURLError if ANY
+    of them is non-public (a mixed answer is a classic rebinding setup)."""
     try:
-        literal = ipaddress.ip_address(host)
+        literal = ipaddress.ip_address(host.strip("[]"))
     except ValueError:
         literal = None
     if literal is not None:
-        if not _ip_is_public(literal):
-            raise UnsafeURLError("URLs pointing at private or local addresses are not allowed.")
-        return
+        if not ALLOW_PRIVATE and not _ip_is_public(literal):
+            raise UnsafeURLError(_PRIVATE_MSG)
+        return [str(literal)]
 
-    try:
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-    except ValueError as exc:
-        raise UnsafeURLError(f"Invalid port in URL: {url}") from exc
     try:
         addrs = await _resolve(host, port)
     except socket.gaierror as exc:
         raise FetchError(f"Could not resolve host '{host}'") from exc
     if not addrs:
         raise FetchError(f"Could not resolve host '{host}'")
-    for addr in addrs:
-        if not _ip_is_public(ipaddress.ip_address(addr.split("%", 1)[0])):
-            raise UnsafeURLError("URLs pointing at private or local addresses are not allowed.")
+    addrs = [a.split("%", 1)[0] for a in addrs]
+    if not ALLOW_PRIVATE:
+        for addr in addrs:
+            if not _ip_is_public(ipaddress.ip_address(addr)):
+                raise UnsafeURLError(_PRIVATE_MSG)
+    return list(dict.fromkeys(addrs))
+
+
+class _PinnedBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that resolves + validates the host at connect time and
+    connects to the validated IP. TLS still verifies the certificate against
+    the original hostname (httpcore takes SNI from the request URL)."""
+
+    def __init__(self) -> None:
+        self._inner = httpcore.AnyIOBackend()
+
+    async def connect_tcp(self, host, port, timeout=None, local_address=None,
+                          socket_options=None):
+        if isinstance(host, bytes):
+            host = host.decode("ascii")
+        addrs = await _resolve_public(host, port)
+        last_exc: Exception | None = None
+        for addr in addrs:
+            try:
+                return await self._inner.connect_tcp(
+                    addr, port, timeout=timeout, local_address=local_address,
+                    socket_options=socket_options)
+            except (httpcore.ConnectError, httpcore.ConnectTimeout, OSError) as exc:
+                last_exc = exc
+        raise last_exc or httpcore.ConnectError(f"Could not connect to {host}")
+
+    async def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        raise UnsafeURLError("Unix sockets are not allowed.")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+def _pinned_transport() -> httpx.AsyncHTTPTransport:
+    transport = httpx.AsyncHTTPTransport(trust_env=False)
+    pool = getattr(transport, "_pool", None)
+    if pool is None or not hasattr(pool, "_network_backend"):
+        # httpx/httpcore internals changed — fail loudly rather than silently unpinned.
+        raise RuntimeError("Cannot install pinned network backend on this httpx version")
+    pool._network_backend = _PinnedBackend()
+    return transport
+
+
+async def _check_url(url: str) -> None:
+    """Raise UnsafeURLError unless url is http(s) and its host resolves to public IPs only."""
+    parts = urlsplit(url)
+    if parts.scheme != "https":
+        raise UnsafeURLError(f"Only https:// URLs are supported — got: {url}")
+    host = parts.hostname
+    if not host:
+        raise UnsafeURLError(f"URL has no host: {url}")
+    if ALLOW_PRIVATE:
+        return
+    try:
+        port = parts.port or 443
+    except ValueError as exc:
+        raise UnsafeURLError(f"Invalid port in URL: {url}") from exc
+    await _resolve_public(host, port)
 
 
 async def _get(client: httpx.AsyncClient, url: str,
@@ -155,7 +215,10 @@ async def _get(client: httpx.AsyncClient, url: str,
 
 def _client() -> httpx.AsyncClient:
     # Redirects are followed manually in _get so every hop is validated.
-    return httpx.AsyncClient(timeout=30, follow_redirects=False)
+    if USE_PROXY:
+        return httpx.AsyncClient(timeout=30, follow_redirects=False)
+    return httpx.AsyncClient(timeout=30, follow_redirects=False,
+                             transport=_pinned_transport(), trust_env=False)
 
 
 def _parse_xml(content: bytes, url: str) -> ET.Element:
@@ -187,6 +250,14 @@ _RSS_URL_RE = re.compile(
     r"rss\.com/podcasts|pod\.link",
     re.I,
 )
+
+
+def upgrade_to_https(url: str) -> str:
+    """Rewrite a pasted http:// URL to https:// (Cited never fetches plain HTTP)."""
+    url = url.strip()
+    if url[:7].lower() == "http://":
+        return "https://" + url[7:]
+    return url
 
 
 def _host(url: str) -> str:
@@ -526,7 +597,7 @@ async def _fetch_rss(url: str) -> list[Post]:
 
 async def get_posts(url: str) -> list[Post]:
     """Return posts for a newsletter URL, using in-process cache."""
-    url    = url.strip()
+    url    = upgrade_to_https(url)
     source = _detect_source(url)   # raises NotSubstackError for LinkedIn etc.
     key    = parse_subdomain(url)
     await _check_url(url)          # reject unsafe URLs before touching the cache

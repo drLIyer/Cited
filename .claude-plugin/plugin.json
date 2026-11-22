@@ -1,0 +1,11 @@
+{
+  "name": "cited",
+  "version": "1.0.0",
+  "description": "Sourced answers from Substack, Medium, and RSS/podcast feeds. Hybrid search over a newsletter's public posts, returning ranked excerpts with titles, dates, and links so Claude can cite them.",
+  "author": {
+    "name": "drliyer"
+  },
+  "homepage": "https://github.com/drliyer/cited",
+  "repository": "https://github.com/drliyer/cited",
+  "keywords": ["substack", "newsletter", "rss", "podcast", "medium", "search", "citations", "rag"]
+}

@@ -12,15 +12,16 @@ LONG = "This is a long enough body of text about pricing strategy and growth. " 
 # ── SSRF protection ───────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("url", [
-    "http://127.0.0.1/feed",
-    "http://169.254.169.254/latest/meta-data/feed",
-    "http://[::1]/feed",
-    "http://[::ffff:127.0.0.1]/feed",
-    "http://10.1.2.3/rss",
-    "http://0.0.0.0/rss",
-    "http://internal.example/feed",
-    "http://rebind.example/feed",      # any private answer → reject
-    "http://v6local.example/feed",
+    "https://127.0.0.1/feed",
+    "https://169.254.169.254/latest/meta-data/feed",
+    "https://[::1]/feed",
+    "https://[::ffff:127.0.0.1]/feed",
+    "https://10.1.2.3/rss",
+    "https://0.0.0.0/rss",
+    "https://internal.example/feed",
+    "https://rebind.example/feed",      # any private answer → reject
+    "https://v6local.example/feed",
+    "http://public.example/feed.xml",   # plain HTTP never allowed
     "file:///etc/passwd",
     "ftp://public.example/feed.xml",
     "gopher://public.example/",
@@ -47,10 +48,25 @@ async def test_get_posts_rejects_internal_before_fetch(mock_http):
 
 async def test_redirect_to_internal_is_blocked(mock_http):
     mock_http["https://public.example/feed.xml"] = httpx.Response(
-        302, headers={"location": "http://169.254.169.254/latest/meta-data/"})
+        302, headers={"location": "https://169.254.169.254/latest/meta-data/"})
     with pytest.raises(UnsafeURLError):
         await fetcher.get_posts("https://public.example/feed.xml")
     assert mock_http["__seen__"] == ["https://public.example/feed.xml"]
+
+
+async def test_redirect_downgrade_to_http_is_blocked(mock_http):
+    mock_http["https://public.example/feed.xml"] = httpx.Response(
+        302, headers={"location": "http://public.example/feed.xml"})
+    with pytest.raises(UnsafeURLError, match="https"):
+        await fetcher.get_posts("https://public.example/feed.xml")
+
+
+async def test_pasted_http_url_is_upgraded(mock_http):
+    mock_http["https://feeds.example/f.xml"] = httpx.Response(
+        200, content=_rss([("A", "https://x/a", "", LONG)]))
+    posts = await fetcher.get_posts("http://feeds.example/f.xml")
+    assert len(posts) == 1
+    assert mock_http["__seen__"] == ["https://feeds.example/f.xml"]
 
 
 async def test_redirect_to_public_is_followed(mock_http):
@@ -218,3 +234,100 @@ def test_display_name():
     assert fetcher.display_name("news.aakashg.com") == "news.aakashg.com"
     assert fetcher.display_name("rss:feeds.example/x.xml") == "rss:feeds.example/x.xml"
     assert fetcher.display_name("medium:@x") == "medium:@x"
+
+
+# ── DNS rebinding: connection is pinned to an address validated at connect time ──
+
+import asyncio
+from conftest import FAKE_DNS
+
+
+async def _tcp_server():
+    hits = []
+
+    async def handle(reader, writer):
+        hits.append(await reader.read(100))
+        writer.close()
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0)
+    return srv, srv.sockets[0].getsockname()[1], hits
+
+
+async def test_real_client_uses_pinned_backend():
+    async with fetcher._client() as client:
+        pool = client._transport._pool
+        assert isinstance(pool._network_backend, fetcher._PinnedBackend)
+
+
+async def test_dns_rebinding_blocked_at_connect(monkeypatch):
+    """Pre-check sees a public IP; by connect time DNS answers 127.0.0.1.
+    The real client must refuse to connect (and never reach the local server)."""
+    srv, port, hits = await _tcp_server()
+    answers = iter([["93.184.216.50"], ["127.0.0.1"]])
+
+    async def flipping_resolve(host, p):
+        if host == "rebinder.example":
+            return next(answers)
+        return FAKE_DNS[host]
+
+    monkeypatch.setattr(fetcher, "_resolve", flipping_resolve)
+    async with srv:
+        async with fetcher._client() as client:
+            with pytest.raises(UnsafeURLError):
+                await fetcher._get(client, f"https://rebinder.example:{port}/feed")
+    assert hits == []
+
+
+async def test_pinned_backend_connects_to_resolved_ip(monkeypatch):
+    """The backend dials the validated IP, not whatever the OS resolves later."""
+    srv, port, hits = await _tcp_server()
+    monkeypatch.setitem(FAKE_DNS, "pinned.example", ["127.0.0.1"])
+    monkeypatch.setattr(fetcher, "_ip_is_public", lambda ip: True)  # allow loopback for this test
+    async with srv:
+        stream = await fetcher._PinnedBackend().connect_tcp("pinned.example", port, timeout=5)
+        await stream.write(b"ping")
+        await stream.aclose()
+        await asyncio.sleep(0.05)
+    assert hits == [b"ping"]
+
+
+async def test_pinned_backend_rejects_private_answer():
+    with pytest.raises(UnsafeURLError):
+        await fetcher._PinnedBackend().connect_tcp("internal.example", 443, timeout=5)
+
+
+async def test_pinned_tls_still_verifies_hostname(monkeypatch):
+    """Connecting to a pinned IP must not weaken TLS: the cert is checked
+    against the URL's hostname, not the IP."""
+    import ssl
+    trustme = pytest.importorskip("trustme")
+    ca = trustme.CA()
+    server_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    ca.issue_cert("tls.example").configure_cert(server_ctx)
+    client_ctx = ssl.create_default_context()
+    ca.configure_trust(client_ctx)
+
+    async def handle(reader, writer):
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        await writer.drain()
+        writer.close()
+
+    srv = await asyncio.start_server(handle, "127.0.0.1", 0, ssl=server_ctx)
+    port = srv.sockets[0].getsockname()[1]
+    monkeypatch.setitem(FAKE_DNS, "tls.example", ["127.0.0.1"])
+    monkeypatch.setitem(FAKE_DNS, "wrong.example", ["127.0.0.1"])
+    monkeypatch.setattr(fetcher, "_ip_is_public", lambda ip: True)
+
+    def client():
+        t = httpx.AsyncHTTPTransport(verify=client_ctx, trust_env=False)
+        t._pool._network_backend = fetcher._PinnedBackend()
+        return httpx.AsyncClient(transport=t, trust_env=False)
+
+    async with srv:
+        async with client() as c:
+            r = await c.get(f"https://tls.example:{port}/")
+            assert r.text == "ok"
+        async with client() as c:
+            with pytest.raises(httpx.ConnectError, match="(?i)certificate|hostname"):
+                await c.get(f"https://wrong.example:{port}/")

@@ -33,6 +33,9 @@ Env vars:
                            (off by default: the token would appear in chat transcripts)
   CITED_HISTORY_DB       — path to the SQLite history file
   CITED_ALLOW_PRIVATE_URLS — "1" to allow fetching private/local addresses (dev only)
+  CITED_USE_PROXY        — "1" to honor HTTPS_PROXY (disables connect-time DNS pinning)
+
+Only https:// sources are fetched; pasted http:// URLs are upgraded to https://.
 """
 
 import asyncio

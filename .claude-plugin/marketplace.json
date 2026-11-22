@@ -1,0 +1,16 @@
+{
+  "name": "cited-plugins",
+  "owner": {
+    "name": "drliyer"
+  },
+  "metadata": {
+    "description": "Cited: sourced answers from newsletters and podcast feeds."
+  },
+  "plugins": [
+    {
+      "name": "cited",
+      "source": "./",
+      "description": "Search the public posts of any Substack, Medium, or RSS/podcast feed and get ranked, citable excerpts."
+    }
+  ]
+}
