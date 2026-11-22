@@ -24,6 +24,18 @@ claude plugin install cited@cited-plugins
 
 Substack: up to the 200 most recent public posts. Medium and RSS/podcast feeds: whatever the feed publishes (often the latest 10–50 items). Each post is indexed up to its first 15,000 characters. Paywalled content is not included. Only `https://` sources are fetched.
 
+## Running the hosted server
+
+| | |
+|---|---|
+| Admin dashboard | `https://<host>/admin` (sign in with `CITED_ADMIN_TOKEN`) |
+| Health | `/health/live` (process up) · `/health/ready` (can serve searches; use for platform health checks) · `/health` (full report) |
+| Rate limit | `CITED_RATE_LIMIT_PER_MIN` (default 15 searches/min per IP) |
+| Confidence limits | ThinkWithMe defaults: High = best ≥ 0.62 & avg ≥ 0.59, Moderate = best ≥ 0.55 (`CITED_CONF_*`) |
+| Persistent data | Set `CITED_HISTORY_DB` to a path on a persistent disk, or history and the error log reset on every deploy |
+
+The server runs a background health check every 60 s (`CITED_HEALTH_MONITOR_SECONDS`) and logs every warning, error, crash, and blocked threat for the dashboard.
+
 ## Privacy
 
 The hosted service logs the newsletter URL and question for each search (deleted after 90 days, never sold). Local installs keep history only on your machine. See [PRIVACY.md](PRIVACY.md).

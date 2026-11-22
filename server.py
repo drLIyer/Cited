@@ -35,6 +35,11 @@ Env vars:
   CITED_HISTORY_RETENTION_DAYS — delete history older than N days (default 90; 0 = keep)
   CITED_ALLOW_PRIVATE_URLS — "1" to allow fetching private/local addresses (dev only)
   CITED_USE_PROXY        — "1" to honor HTTPS_PROXY (disables connect-time DNS pinning)
+  CITED_RATE_LIMIT_PER_MIN — HTTP mode: searches per minute per client IP (default 15; 0 = off)
+  CITED_TRUSTED_PROXY_HOPS — proxies in front of the app adding X-Forwarded-For (default 1)
+  CITED_RATE_LIMIT_SHARED_CIDRS / CITED_RATE_LIMIT_SHARED_PER_MIN — higher limit for
+                           shared egress IPs (see ratelimit.py)
+  Health: GET /health/live, /health/ready, /health (see health.py)
 
 Only https:// sources are fetched; pasted http:// URLs are upgraded to https://.
 """
@@ -47,14 +52,18 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from typing import Optional
 from urllib.parse import parse_qs
 
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 
 import fetcher as _fetcher
 import pipeline as _pipeline
 import history as _history
+import health as _health
+import events as _events
+from ratelimit import ClientRateLimit
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                     format="%(levelname)s [%(name)s] %(message)s")
@@ -70,6 +79,16 @@ _ADMIN_MCP_TOOL = os.getenv("CITED_ADMIN_MCP_TOOL") == "1"
 _log_env = os.getenv("CITED_LOG_QUERIES")
 _LOG_QUERIES = (_log_env == "1") if _log_env in ("0", "1") else (
     True if not _HTTP_MODE else bool(_ADMIN_TOKEN))
+
+# Error/event log for the admin dashboard: on whenever an admin can read it.
+_events.configure(enabled=_HTTP_MODE and bool(_ADMIN_TOKEN),
+                  db_path=lambda: _history.DB_PATH,
+                  retention_days=int(os.getenv("CITED_EVENT_RETENTION_DAYS", "30")))
+if _HTTP_MODE:
+    _events.install_capture()
+
+# Per-IP rate limit for searches in hosted mode (local stdio is never limited).
+_RATE = ClientRateLimit.from_env()
 
 mcp = MCPServer(
     "Cited",
@@ -104,7 +123,13 @@ mcp = MCPServer(
 
         "## Composing answers\n"
         "Always cite the article or episode title and link for every claim. "
-        "If confidence is below 0.5, say so and recommend the user verify with the original source. "
+        "Every search_substack result has a `confidence` with a level (High / Moderate / "
+        "Limited coverage) and a best-match percentage. Tell the user the confidence in one "
+        "short line, e.g. 'Confidence: High coverage (best match 71%)'. "
+        "If the result is Limited coverage it includes a `disclaimer`: show that disclaimer "
+        "to the user word for word at the top of your answer. If you then add anything from "
+        "your general knowledge or web search, label it clearly as not coming from the "
+        "newsletter, and keep newsletter-backed statements cited. "
         "If the source is paywalled, returns few results, or the topic may predate the indexed "
         "posts, say so honestly."
     ),
@@ -119,29 +144,99 @@ def _coverage_note(n_posts: int) -> str:
             f"its first {_fetcher.POST_CHARS:,} characters.")
 
 
+# Coverage levels of the most recent searches, for the low-confidence alert
+# (same rule as ThinkWithMe's health agent: >50% of the last 20 are Limited).
+_LOW_CONF_WINDOW = int(os.getenv("CITED_LOW_CONF_WINDOW", "20"))
+_LOW_CONF_ALERT  = float(os.getenv("CITED_LOW_CONF_ALERT", "0.5"))
+_recent_levels: deque = deque(maxlen=_LOW_CONF_WINDOW)
+
+
 async def _retrieve(url: str, query: str, top_k: int):
     """Fetch posts (async I/O) then run chunking + search in a worker thread
-    so CPU-bound model inference doesn't block the event loop."""
+    so CPU-bound model inference doesn't block the event loop.
+    Returns (posts, hits, coverage) — coverage per pipeline.coverage()."""
     posts = await _fetcher.get_posts(url)
     if not posts:
-        return posts, [], 0.0
+        return posts, [], _pipeline.coverage([])
 
     def _work():
         chunks = _pipeline.chunk_posts(posts)
         key    = _fetcher.parse_subdomain(url)
         hits   = _pipeline.search(query, chunks, top_k=top_k, cache_key=key)
-        return hits, _pipeline.retrieval_confidence(hits)
+        return hits, _pipeline.coverage(hits)
 
-    hits, confidence = await asyncio.to_thread(_work)
-    return posts, hits, confidence
+    hits, cov = await asyncio.to_thread(_work)
+    _recent_levels.append(cov["level"])
+    return posts, hits, cov
 
 
-async def _save_history(url, question, answer, sources, confidence, tool) -> None:
+def _low_coverage_disclaimer(source: str, cov: dict) -> str:
+    return (f"⚠️ Limited coverage: {source} has little on this topic "
+            f"(best match {cov['percent']}%). This answer draws on general AI knowledge "
+            "and web search rather than the newsletter itself — verify key claims independently.")
+
+
+def _source_name(url: str) -> str:
+    try:
+        return _fetcher.display_name(_fetcher.parse_subdomain(url))
+    except Exception:
+        return "This source"
+
+
+def _confidence_payload(cov: dict) -> dict:
+    return {
+        "level":         cov["level"],
+        "label":         cov["label"],
+        "percent":       cov["percent"],
+        "best_match":    cov["top_similarity"],
+        "average_match": cov["avg_similarity"],
+        "display":       f"{cov['label'].split(' —')[0]} (best match {cov['percent']}%)",
+    }
+
+
+def _tool_problem(tool: str, url: str, exc: Exception) -> None:
+    """Record an expected tool failure (bad URL, unreachable feed) in the error log."""
+    if isinstance(exc, _fetcher.UnsafeURLError):
+        kind, level = "blocked_url", "WARNING"
+    elif isinstance(exc, _fetcher.UnsafeContentError):
+        kind, level = "blocked_content", "WARNING"
+    elif isinstance(exc, _fetcher.NotSubstackError):
+        kind, level = "invalid_source", "INFO"
+    else:
+        kind, level = "fetch_failed", "WARNING"
+    _events.record(kind, str(exc), level=level, source=tool,
+                   context={"tool": tool, "url": url[:500]},
+                   group_key=f"{kind}|{_fetcher._host(url)}|{type(exc).__name__}")
+
+
+def _rate_limit_error(ctx: Optional[Context]) -> Optional[str]:
+    """Return an error message if this caller is over the search rate limit."""
+    if not _HTTP_MODE or ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+    except Exception:
+        request = None
+    if request is None:
+        return None
+    peer = request.client.host if getattr(request, "client", None) else None
+    ip = _RATE.client_ip(peer, request.headers.get("x-forwarded-for"))
+    allowed, limit, _remaining, retry = _RATE.check(ip)
+    if allowed:
+        return None
+    log.info("Rate limit hit for %s (limit %d/min)", ip, limit)
+    _events.record("rate_limited", f"A client hit the rate limit ({limit} searches/min).",
+                   level="INFO", source="ratelimit", group_key="rate_limited")
+    return (f"Rate limit reached: Cited allows {limit} searches per minute. "
+            f"Please wait {retry} seconds and try again.")
+
+
+async def _save_history(url, question, answer, sources, cov: dict, tool) -> None:
     if not _LOG_QUERIES:
         return
     try:
         await asyncio.to_thread(_history.save, url, question, answer, sources,
-                                confidence, tool, not _HTTP_MODE)
+                                cov["top_similarity"], tool, not _HTTP_MODE, cov["level"])
     except Exception:
         log.exception("Failed to save history")  # never break a tool call
 
@@ -149,7 +244,8 @@ async def _save_history(url, question, answer, sources, confidence, tool) -> Non
 # ── Tool 1: search_substack ────────────────────────────────────────────────────
 
 @mcp.tool()
-async def search_substack(url: str, query: str, top_k: int = 5) -> str:
+async def search_substack(url: str, query: str, top_k: int = 5,
+                          ctx: Optional[Context] = None) -> str:
     """
     Search a newsletter or podcast feed for content relevant to a query.
 
@@ -157,21 +253,23 @@ async def search_substack(url: str, query: str, top_k: int = 5) -> str:
     podcast feeds). Fetches all publicly available posts/episodes (cached for
     1 hour), builds a hybrid BM25 + vector index, and reranks with a
     cross-encoder. Returns ranked excerpts with titles, dates, URLs, and a
-    retrieval confidence score.
-
-    Low confidence (< 0.5) means the source probably doesn't cover the topic.
+    confidence rating: High / Moderate / Limited coverage plus a best-match
+    percentage. Limited coverage means the source probably doesn't cover the topic.
 
     Args:
         url:   Newsletter or feed URL — Substack, Medium, or any RSS/podcast feed
         query: The question or search query
         top_k: Number of excerpts to return (default 5, max 10)
     """
+    limited = _rate_limit_error(ctx)
+    if limited:
+        return json.dumps({"error": limited, "rate_limited": True})
     try:
         top_k = max(1, min(int(top_k), 10))
     except (TypeError, ValueError):
         top_k = 5
     try:
-        posts, hits, confidence = await _retrieve(url, query, top_k)
+        posts, hits, cov = await _retrieve(url, query, top_k)
         if not posts:
             return json.dumps({
                 "error": "No public posts found. The newsletter may be empty or fully paywalled.",
@@ -181,47 +279,51 @@ async def search_substack(url: str, query: str, top_k: int = 5) -> str:
         result: dict = {
             "newsletter": url,
             "posts_indexed": len(posts),
-            "coverage": _coverage_note(len(posts)),
-            "confidence": round(confidence, 3),
-            "low_confidence": confidence < 0.5,
+            "coverage_note": _coverage_note(len(posts)),
+            "confidence": _confidence_payload(cov),
+            "low_confidence": cov["level"] == "low",
             "results": [
                 {
-                    "rank":    i + 1,
-                    "title":   h["title"],
-                    "date":    h["date"],
-                    "url":     h["url"],
-                    "score":   round(h["score"], 3),
-                    "excerpt": h["text"],
+                    "rank":       i + 1,
+                    "title":      h["title"],
+                    "date":       h["date"],
+                    "url":        h["url"],
+                    "match_pct":  max(0, min(100, round(h["similarity"] * 100))),
+                    "excerpt":    h["text"],
                 }
                 for i, h in enumerate(hits)
             ],
         }
 
-        if confidence < 0.5:
-            result["warning"] = (
-                f"Retrieval confidence is {confidence:.0%} — the newsletter may not "
-                "cover this topic well. Remind the reader to verify with original sources."
+        if cov["level"] == "low":
+            result["disclaimer"] = _low_coverage_disclaimer(_source_name(url), cov)
+            result["instructions_for_assistant"] = (
+                "Show `disclaimer` to the user verbatim at the top of your answer. Clearly "
+                "separate anything from general knowledge or web search from what the excerpts "
+                "below actually say, and cite the excerpts you use."
             )
 
         # Save to history — store top excerpt as the answer so it's retrievable
         top_excerpt = hits[0]["text"] if hits else ""
-        await _save_history(url, query, top_excerpt, result["results"], confidence, "search")
+        await _save_history(url, query, top_excerpt, result["results"], cov, "search")
 
         return json.dumps(result, indent=2)
 
     except _fetcher.NotSubstackError as exc:
+        _tool_problem("search_substack", url, exc)
         return json.dumps({"error": str(exc)})
     except _fetcher.FetchError as exc:
+        _tool_problem("search_substack", url, exc)
         return json.dumps({"error": f"Failed to fetch newsletter: {exc}"})
     except Exception as exc:
-        log.exception("search_substack error")
+        log.exception("search_substack failed (url=%s)", url)
         return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
 # ── Tool 2: list_posts ─────────────────────────────────────────────────────────
 
 @mcp.tool()
-async def list_posts(url: str) -> str:
+async def list_posts(url: str, ctx: Optional[Context] = None) -> str:
     """
     List all publicly available posts or episodes from a newsletter or feed.
 
@@ -232,6 +334,9 @@ async def list_posts(url: str) -> str:
     Args:
         url: Newsletter or feed URL — Substack, Medium, or any RSS/podcast feed
     """
+    limited = _rate_limit_error(ctx)
+    if limited:
+        return f"Error: {limited}"
     try:
         posts = await _fetcher.get_posts(url)
         if not posts:
@@ -243,11 +348,13 @@ async def list_posts(url: str) -> str:
         return "\n".join(lines)
 
     except _fetcher.NotSubstackError as exc:
+        _tool_problem("list_posts", url, exc)
         return f"Error: {exc}"
     except _fetcher.FetchError as exc:
+        _tool_problem("list_posts", url, exc)
         return f"Failed to fetch newsletter: {exc}"
     except Exception as exc:
-        log.exception("list_posts error")
+        log.exception("list_posts failed (url=%s)", url)
         return f"Unexpected error: {exc}"
 
 
@@ -276,7 +383,7 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
         import anthropic
 
         try:
-            posts, hits, confidence = await _retrieve(url, question, 5)
+            posts, hits, cov = await _retrieve(url, question, 5)
             if not posts:
                 return json.dumps({
                     "error": "No public posts found. The newsletter may be empty or fully paywalled.",
@@ -292,9 +399,11 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
                 "Cite the article title for every specific claim. "
                 "If the excerpts don't cover the question clearly, say so honestly."
             )
-            if confidence < 0.5:
+            disclaimer = (_low_coverage_disclaimer(_source_name(url), cov)
+                          if cov["level"] == "low" else None)
+            if disclaimer:
                 system += (
-                    f"\n\nNote: Retrieval confidence is {confidence:.0%}. "
+                    f"\n\nNote: Limited coverage (best match {cov['percent']}%). "
                     "The newsletter may not cover this topic well. "
                     "Be explicit about uncertainty and recommend verifying with sources."
                 )
@@ -307,17 +416,20 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
                 messages=[{"role": "user", "content": question}],
             )
             answer = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+            if disclaimer:
+                answer = f"{disclaimer}\n\n{answer}"
 
             result = {
                 "question":       question,
                 "answer":         answer,
-                "confidence":     round(confidence, 3),
-                "low_confidence": confidence < 0.5,
+                "confidence":     _confidence_payload(cov),
+                "low_confidence": cov["level"] == "low",
+                "disclaimer":     disclaimer,
                 "sources":        sources,
                 "posts_indexed":  len(posts),
             }
 
-            await _save_history(url, question, answer, sources, confidence, "ask")
+            await _save_history(url, question, answer, sources, cov, "ask")
 
             return json.dumps(result, indent=2)
 
@@ -349,14 +461,26 @@ def _check_admin(token: Optional[str]) -> Optional[str]:
     if not _ADMIN_TOKEN:
         return "Admin access is not enabled on this server."
     now = time.time()
+    locked = just_locked = False
     with _fail_lock:
         _fail_times[:] = [t for t in _fail_times if now - t < _FAIL_WINDOW]
         if len(_fail_times) >= _MAX_FAILS:
-            return "Too many failed attempts. Try again later."
-        if not token or not hmac.compare_digest(token.encode(), _ADMIN_TOKEN.encode()):
+            locked = True
+        elif not token or not hmac.compare_digest(token.encode(), _ADMIN_TOKEN.encode()):
             _fail_times.append(now)
-            return "Invalid admin token."
-    return None
+            just_locked = len(_fail_times) >= _MAX_FAILS
+        else:
+            return None
+    # Record outside the lock. Never record the token value itself.
+    if locked:
+        return "Too many failed attempts. Try again later."
+    _events.record("admin_auth_failed", "Wrong or missing admin token.", level="WARNING",
+                   source="admin", group_key="admin_auth_failed")
+    if just_locked:
+        _events.record("admin_lockout",
+                       f"{_MAX_FAILS} wrong admin tokens in {_FAIL_WINDOW // 60} min — admin access "
+                       "locked temporarily.", level="ERROR", source="admin", group_key="admin_lockout")
+    return "Invalid admin token."
 
 
 def _format_history(rows: list[dict], header: str, with_meta: bool = True) -> str:
@@ -368,7 +492,9 @@ def _format_history(rows: list[dict], header: str, with_meta: bool = True) -> st
         if with_meta:
             sources_str = ", ".join(s.get("title", "") for s in r["sources"][:3])
             conf = r["confidence"] if r["confidence"] is not None else 0.0
-            entry += f"  Sources: {sources_str or 'none'} | Confidence: {conf:.0%}\n"
+            level = {"high": "High", "medium": "Moderate", "low": "Limited"}.get(r.get("level") or "", "")
+            conf_str = f"{level} coverage, best match {conf:.0%}" if level else f"{conf:.0%}"
+            entry += f"  Sources: {sources_str or 'none'} | Confidence: {conf_str}\n"
         lines.append(entry)
     return "\n".join(lines)
 
@@ -466,34 +592,236 @@ def _admin_rows(url: Optional[str], limit, query: Optional[str]) -> list[dict]:
     return _history.get(url=url, limit=limit)
 
 
-async def _send_json(send, status: int, payload: dict) -> None:
+async def _send_json(send, status: int, payload: dict, head: bool = False) -> None:
     body = json.dumps(payload).encode()
     await send({"type": "http.response.start", "status": status,
                 "headers": [[b"content-type", b"application/json"],
+                            [b"content-length", str(len(body)).encode()],
                             [b"cache-control", b"no-store"]]})
-    await send({"type": "http.response.body", "body": body})
+    await send({"type": "http.response.body", "body": b"" if head else body})
 
 
-def build_http_app():
-    """ASGI app: /health, /admin/history, and the MCP endpoint at /mcp."""
+async def _tool_names() -> list[str]:
+    return [t.name for t in await mcp.list_tools()]
+
+
+def _on_health_change(previous, status, checks) -> None:
+    failing = [f"{_health.CHECK_LABELS.get(k, k)}: {v['status']}"
+               for k, v in checks.items() if v["status"] not in ("ok", "disabled")]
+    _events.record("health_change",
+                   f"Health changed from {previous or 'unknown'} to {status}"
+                   + (f" ({'; '.join(failing)})" if failing else ""),
+                   level="INFO" if status == "ok" else ("WARNING" if status == "degraded" else "ERROR"),
+                   source="health", context={"from": previous, "to": status},
+                   group_key=f"health|{previous}|{status}")
+
+
+def _recent_errors_last_hour() -> Optional[int]:
+    if not _events.enabled():
+        return None
+    s = _events.summary(hours=1)["by_level"]
+    return int(s.get("ERROR", 0) + s.get("CRITICAL", 0))
+
+
+_HEALTH = _health.HealthChecker(
+    list_tools=_tool_names,
+    log_queries=_LOG_QUERIES,
+    db_path=lambda: _history.DB_PATH,
+    db_check=_history.check_writable,
+    rate_limit_per_min=(_RATE.per_min or None) if _HTTP_MODE else None,
+    on_status_change=_on_health_change,
+    recent_levels=lambda: list(_recent_levels),
+    low_conf_alert=_LOW_CONF_ALERT,
+    recent_errors=_recent_errors_last_hour,
+)
+
+
+_ADMIN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "admin")
+_ADMIN_CSP = ("default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+              "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; "
+              "base-uri 'none'; form-action 'none'")
+
+
+async def _send_file(send, name: str, content_type: bytes, head: bool = False) -> None:
+    with open(os.path.join(_ADMIN_DIR, name), "rb") as f:
+        body = f.read()
+    await send({"type": "http.response.start", "status": 200, "headers": [
+        [b"content-type", content_type],
+        [b"content-length", str(len(body)).encode()],
+        [b"cache-control", b"no-store"],
+        [b"content-security-policy", _ADMIN_CSP.encode()],
+        [b"x-frame-options", b"DENY"],
+        [b"x-content-type-options", b"nosniff"],
+        [b"referrer-policy", b"no-referrer"],
+    ]})
+    await send({"type": "http.response.body", "body": b"" if head else body})
+
+
+def _qs_int(qs: dict, key: str, default: int, lo: int, hi: int) -> int:
+    try:
+        return max(lo, min(int((qs.get(key) or [default])[0]), hi))
+    except (TypeError, ValueError):
+        return default
+
+
+async def _admin_api(path: str, qs: dict) -> dict:
+    """Data for the admin dashboard (caller has already been authenticated)."""
+    one = lambda k: (qs.get(k) or [None])[0]
+    if path == "/admin/api/overview":
+        _, health = await _HEALTH.report(len(_pipeline._EMBED_CACHE))
+        searches = await asyncio.to_thread(_history.stats, 24) if _LOG_QUERIES else None
+        events_summary = await asyncio.to_thread(_events.summary, 24)
+        security = await asyncio.to_thread(_events.security_summary)
+        fixes = await asyncio.to_thread(_events.fix_stats, 30)
+        return {"health": health, "searches": searches, "events": events_summary,
+                "security": security, "fixes": fixes}
+    if path == "/admin/api/searches":
+        if not _LOG_QUERIES:
+            return {"enabled": False, "searches": []}
+        level = one("level")
+        level = level if level in ("high", "medium", "low") else None
+        rows = await asyncio.to_thread(_history.recent, _qs_int(qs, "limit", 50, 1, 500), level)
+        return {"enabled": True, "searches": rows}
+    if path == "/admin/api/errors":
+        hours = _qs_int(qs, "hours", 24, 1, 24 * 90)
+        category = one("category")
+        category = category if category in ("error", "security", "usage", "health") else None
+        rows = await asyncio.to_thread(_events.groups, hours, category, one("level"),
+                                       _qs_int(qs, "limit", 200, 1, 1000))
+        return {"enabled": _events.enabled(), "groups": rows}
+    raise KeyError(path)
+
+
+async def _admin_action(path: str, body: dict) -> tuple[int, dict]:
+    fp = str(body.get("fingerprint") or "")
+    if not fp or len(fp) > 64:
+        return 400, {"error": "fingerprint is required"}
+    if path == "/admin/api/resolve":
+        ok = await asyncio.to_thread(_events.resolve, fp, str(body.get("note") or ""), "admin")
+    elif path == "/admin/api/reopen":
+        ok = await asyncio.to_thread(_events.reopen, fp)
+    else:
+        return 404, {"error": "Not found"}
+    return (200, {"ok": True}) if ok else (404, {"error": "No such error"})
+
+
+async def _read_json_body(receive, limit: int = 16_384) -> Optional[dict]:
+    chunks, size = [], 0
+    while True:
+        msg = await receive()
+        if msg["type"] != "http.request":
+            return None
+        chunk = msg.get("body", b"")
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+        if not msg.get("more_body"):
+            break
+    try:
+        data = json.loads(b"".join(chunks) or b"{}")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+_monitor_task: Optional[asyncio.Task] = None
+
+
+async def _health_monitor(interval: float) -> None:
+    """Run the full health report every `interval` seconds (like ThinkWithMe's
+    health agent), so status changes and warnings are logged even when nobody
+    is looking at the dashboard."""
+    while True:
+        try:
+            await _HEALTH.report(len(_pipeline._EMBED_CACHE))
+        except Exception:
+            log.exception("Background health check failed")
+        await asyncio.sleep(interval)
+
+
+def build_http_app(monitor_interval: Optional[float] = None):
+    """ASGI app: /health*, /admin (dashboard + API), and the MCP endpoint at /mcp.
+
+    monitor_interval: if set, start the background health monitor at startup.
+    """
     mcp_app = mcp.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
         host="0.0.0.0",
     )
 
+    health_routes = {
+        "/health/live":  lambda: _HEALTH.live(),
+        "/health/ready": lambda: _HEALTH.ready(),
+        "/health":       lambda: _HEALTH.report(len(_pipeline._EMBED_CACHE)),
+    }
+
     async def app(scope, receive, send):
         path = scope.get("path") if scope["type"] == "http" else None
-        if path in ("/", "/health"):
-            tools = [t.name for t in await mcp.list_tools()]
-            await _send_json(send, 200, {
-                "name": "Cited",
-                "status": "ok",
-                "mcp_endpoint": "/mcp",
-                "tools": tools,
-                "usage": "Add https://<this-host>/mcp in claude.ai → Customize → Connectors",
-                "warmed_newsletters": len(_pipeline._EMBED_CACHE),
-            })
+        if path is not None and path != "/" and path.endswith("/"):
+            path = path.rstrip("/")
+        method = scope.get("method") if path else None
+        if path in health_routes or path == "/":
+            if method not in ("GET", "HEAD"):
+                await _send_json(send, 405, {"error": "Method not allowed"})
+                return
+            if path == "/":
+                status, payload = 200, {
+                    "name": "Cited",
+                    "version": _health.VERSION,
+                    "mcp_endpoint": "/mcp",
+                    "health": "/health",
+                    "usage": "Add https://<this-host>/mcp in claude.ai → Customize → Connectors",
+                }
+            else:
+                try:
+                    status, payload = await health_routes[path]()
+                except Exception as exc:  # a health check must never crash the server
+                    log.exception("Health check failed")
+                    status, payload = 503, {"status": "unavailable",
+                                            "error": f"{type(exc).__name__}: {exc}"}
+            await _send_json(send, status, payload, head=(method == "HEAD"))
+        elif path in ("/admin", "/admin/app.js"):
+            if method not in ("GET", "HEAD"):
+                await _send_json(send, 405, {"error": "Method not allowed"})
+                return
+            if not _ADMIN_TOKEN:
+                await _send_json(send, 404, {"error": "Admin access is not enabled on this server."})
+                return
+            if path == "/admin":
+                await _send_file(send, "dashboard.html", b"text/html; charset=utf-8", method == "HEAD")
+            else:
+                await _send_file(send, "app.js", b"text/javascript; charset=utf-8", method == "HEAD")
+        elif path and path.startswith("/admin/api/"):
+            is_action = path in ("/admin/api/resolve", "/admin/api/reopen")
+            if method != ("POST" if is_action else "GET"):
+                await _send_json(send, 405, {"error": "Method not allowed"})
+                return
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1")
+                       for k, v in scope.get("headers", [])}
+            auth  = headers.get("authorization", "")
+            token = auth[7:].strip() if auth.lower().startswith("bearer ") else None
+            err = _check_admin(token)
+            if err:
+                status = 404 if not _ADMIN_TOKEN else (429 if "Too many" in err else 401)
+                await _send_json(send, status, {"error": err})
+                return
+            if is_action:
+                body = await _read_json_body(receive)
+                if body is None:
+                    await _send_json(send, 400, {"error": "Expected a small JSON object"})
+                    return
+                status, payload = await _admin_action(path, body)
+                await _send_json(send, status, payload)
+                return
+            qs = parse_qs(scope.get("query_string", b"").decode("utf-8", "replace"))
+            try:
+                payload = await _admin_api(path, qs)
+            except KeyError:
+                await _send_json(send, 404, {"error": "Not found"})
+                return
+            await _send_json(send, 200, payload)
         elif path == "/admin/history":
             if scope.get("method") != "GET":
                 await _send_json(send, 405, {"error": "Method not allowed"})
@@ -513,9 +841,47 @@ def build_http_app():
                                            one("limit") or 50, one("query"))
             await _send_json(send, 200, {"count": len(rows), "entries": rows})
         else:
-            await mcp_app(scope, receive, send)
+            await _guarded(mcp_app, scope, receive, send)
 
-    return app
+    async def _guarded(inner, scope, receive, send):
+        """Run the MCP app; log anything it fails to handle and return a clean 500."""
+        if scope["type"] == "http":
+            _events.install_loop_handler(asyncio.get_running_loop())
+        started = False
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await inner(scope, receive, tracking_send)
+        except Exception:
+            if scope["type"] != "http":
+                raise
+            log.exception("Unhandled error serving %s %s", scope.get("method"), scope.get("path"))
+            if not started:
+                await _send_json(send, 500, {"error": "Internal server error"})
+
+    async def outer(scope, receive, send):
+        if scope["type"] == "lifespan" and monitor_interval:
+            async def lifespan_receive():
+                global _monitor_task
+                message = await receive()
+                if message["type"] == "lifespan.startup" and _monitor_task is None:
+                    _monitor_task = asyncio.create_task(_health_monitor(monitor_interval))
+                return message
+            return await app(scope, lifespan_receive, send)
+        try:
+            await app(scope, receive, send)
+        except Exception:
+            if scope["type"] != "http":
+                raise
+            log.exception("Unhandled error serving %s %s", scope.get("method"), scope.get("path"))
+            raise
+
+    return outer
 
 
 if __name__ == "__main__":
@@ -536,11 +902,23 @@ if __name__ == "__main__":
         ]
 
         async def _prewarm_all():
-            try:
-                await asyncio.to_thread(_pipeline.prewarm)
-            except Exception as exc:
-                log.warning("Model pre-warm failed (will load on first query): %s", exc)
-                return
+            # Load models, retrying with backoff: a transient download failure
+            # shouldn't leave the server permanently "not ready".
+            _HEALTH.prewarm_started()
+            delays = [5, 15, 30, 60, 120]
+            for attempt in range(len(delays) + 1):
+                try:
+                    await asyncio.to_thread(_pipeline.prewarm)
+                    _HEALTH.prewarm_finished()
+                    break
+                except Exception as exc:
+                    if attempt == len(delays):
+                        log.error("Model loading failed after %d attempts: %s", attempt + 1, exc)
+                        _HEALTH.prewarm_finished(exc)
+                        return
+                    log.warning("Model loading failed (attempt %d), retrying in %ds: %s",
+                                attempt + 1, delays[attempt], exc)
+                    await asyncio.sleep(delays[attempt])
             for url in _PREWARM_URLS:
                 try:
                     posts  = await _fetcher.get_posts(url)
@@ -554,6 +932,8 @@ if __name__ == "__main__":
             asyncio.run(_prewarm_all())
         threading.Thread(target=_run_prewarm, daemon=True).start()
 
-        uvicorn.run(build_http_app(), host="0.0.0.0", port=port)
+        interval = float(os.getenv("CITED_HEALTH_MONITOR_SECONDS", "60"))
+        uvicorn.run(build_http_app(monitor_interval=interval if interval > 0 else None),
+                    host="0.0.0.0", port=port)
     else:
         asyncio.run(mcp.run_stdio_async())

@@ -97,7 +97,7 @@ async def test_billion_laughs_rejected(mock_http):
 <!DOCTYPE lolz [<!ENTITY lol "lol"><!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;">]>
 <rss><channel><item><title>&lol2;</title></item></channel></rss>"""
     mock_http["https://public.example/feed.xml"] = httpx.Response(200, content=bomb)
-    with pytest.raises(FetchError, match="parse"):
+    with pytest.raises(fetcher.UnsafeContentError, match="unsafe XML"):
         await fetcher.get_posts("https://public.example/feed.xml")
 
 

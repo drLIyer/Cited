@@ -3,8 +3,8 @@ builder = "nixpacks"
 
 [deploy]
 startCommand = "python server.py"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckPath = "/health/ready"
+healthcheckTimeout = 300  # first boot downloads + loads the search models
 restartPolicyType = "on_failure"
 
 # Required env vars to set in Railway dashboard:

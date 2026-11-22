@@ -59,7 +59,12 @@ async def test_search_substack_end_to_end(server_factory, mock_http):
     out = json.loads(await s.search_substack("https://feeds.example/feed.xml", "pricing tiers", 3))
     assert out["posts_indexed"] == 1
     assert out["results"][0]["date"] == "2024-01-01"
-    assert "coverage" in out
+    assert "coverage_note" in out
+    conf = out["confidence"]
+    assert conf["level"] in ("high", "medium", "low")
+    assert 0 <= conf["percent"] <= 100
+    assert conf["display"].endswith(f"(best match {conf['percent']}%)")
+    assert all(0 <= r["match_pct"] <= 100 for r in out["results"])
     rows = s._history.get()
     assert len(rows) == 1 and rows[0]["question"] == "pricing tiers"
 
@@ -124,6 +129,7 @@ def _client(app):
 
 async def test_health_lists_real_tools(server_factory):
     s = server_factory(CITED_TRANSPORT="http", CITED_ADMIN_TOKEN="s3cret")
+    s._pipeline.prewarm()
     async with _client(s.build_http_app()) as c:
         r = await c.get("/health")
     assert r.status_code == 200
@@ -165,3 +171,35 @@ async def test_admin_mcp_tool_uses_constant_time_check(server_factory):
                        CITED_ADMIN_MCP_TOOL="1")
     assert (await s.admin_get_history("nope")).startswith("Access denied")
     assert (await s.admin_get_history("s3cret")) == "No history found."
+
+
+async def test_low_coverage_adds_disclaimer(server_factory, mock_http, monkeypatch):
+    s = server_factory()
+    mock_http["https://feeds.example/feed.xml"] = httpx.Response(200, content=_rss_feed())
+    monkeypatch.setattr(s._pipeline, "coverage", lambda hits: {
+        "level": "low", "label": "Limited coverage — draws on general AI knowledge",
+        "color": "#e74c3c", "top_similarity": 0.31, "avg_similarity": 0.2, "percent": 31})
+    out = json.loads(await s.search_substack("https://feeds.example/feed.xml", "quantum physics"))
+    assert out["low_confidence"] is True
+    assert out["disclaimer"].startswith("⚠️ Limited coverage: rss:feeds.example/feed.xml")
+    assert "general AI knowledge" in out["disclaimer"] and "31%" in out["disclaimer"]
+    assert "verbatim" in out["instructions_for_assistant"]
+    row = s._history.get()[0]
+    assert row["level"] == "low" and row["confidence"] == 0.31
+
+
+async def test_high_coverage_has_no_disclaimer(server_factory, mock_http, monkeypatch):
+    s = server_factory()
+    mock_http["https://feeds.example/feed.xml"] = httpx.Response(200, content=_rss_feed())
+    monkeypatch.setattr(s._pipeline, "coverage", lambda hits: {
+        "level": "high", "label": "High coverage", "color": "#27ae60",
+        "top_similarity": 0.7, "avg_similarity": 0.65, "percent": 70})
+    out = json.loads(await s.search_substack("https://feeds.example/feed.xml", "pricing"))
+    assert "disclaimer" not in out and out["low_confidence"] is False
+    assert out["confidence"]["display"] == "High coverage (best match 70%)"
+
+
+def test_instructions_require_showing_confidence(server_factory):
+    text = server_factory().mcp.instructions
+    assert "Confidence: High coverage (best match 71%)" in text
+    assert "word for word" in text

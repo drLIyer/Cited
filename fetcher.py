@@ -74,6 +74,10 @@ class FetchError(Exception):
     pass
 
 
+class UnsafeContentError(FetchError):
+    """The source returned content we refuse to process (XML attack, oversized body)."""
+
+
 @dataclass
 class Post:
     title: str
@@ -202,12 +206,12 @@ async def _get(client: httpx.AsyncClient, url: str,
             resp.raise_for_status()
             declared = resp.headers.get("content-length")
             if declared and declared.isdigit() and int(declared) > MAX_FETCH_BYTES:
-                raise FetchError(f"Response from {url} is too large.")
+                raise UnsafeContentError(f"Response from {url} is too large.")
             buf = bytearray()
             async for chunk in resp.aiter_bytes():
                 buf += chunk
                 if len(buf) > MAX_FETCH_BYTES:
-                    raise FetchError(f"Response from {url} is too large.")
+                    raise UnsafeContentError(f"Response from {url} is too large.")
             return httpx.Response(resp.status_code, headers=resp.headers,
                                   content=bytes(buf), request=resp.request)
     raise FetchError(f"Too many redirects fetching {url}")
@@ -224,7 +228,10 @@ def _client() -> httpx.AsyncClient:
 def _parse_xml(content: bytes, url: str) -> ET.Element:
     try:
         return _xml_fromstring(content)
-    except (_XMLParseError, DefusedXmlException) as exc:
+    except DefusedXmlException as exc:
+        raise UnsafeContentError(
+            f"Blocked unsafe XML from {url} ({type(exc).__name__}): {exc}") from exc
+    except _XMLParseError as exc:
         raise FetchError(f"Could not parse feed at {url}: {exc}") from exc
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import threading
 import time
@@ -25,6 +26,23 @@ CHUNK_OVERLAP  = 50
 RRF_K          = 60
 CANDIDATES     = 30   # BM25 + vector each return this many before RRF
 _EMBED_TTL     = 3600  # match fetcher cache TTL
+
+# Coverage ("confidence") limits — the same rules as the ThinkWithMe / Distill
+# RAG service, which uses the same embedding model (all-MiniLM-L6-v2) and the
+# same cosine-similarity scores, so the numbers mean the same thing here.
+#   High:     best match ≥ 0.62 AND average of returned matches ≥ 0.59
+#   Moderate: best match ≥ 0.55
+#   Limited:  anything lower
+CONF_HIGH_TOP   = float(os.getenv("CITED_CONF_HIGH_TOP", "0.62"))
+CONF_HIGH_AVG   = float(os.getenv("CITED_CONF_HIGH_AVG", "0.59"))
+CONF_MEDIUM_TOP = float(os.getenv("CITED_CONF_MEDIUM_TOP", "0.55"))
+
+COVERAGE_LEVELS = {
+    "high":   {"label": "High coverage",     "color": "#27ae60"},
+    "medium": {"label": "Moderate coverage", "color": "#e67e22"},
+    "low":    {"label": "Limited coverage — draws on general AI knowledge",
+               "color": "#e74c3c"},
+}
 
 # Lazy-loaded models
 _embed_model  = None
@@ -61,6 +79,11 @@ def _rerank():
                 log.info("Loading cross-encoder …")
                 _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
     return _reranker
+
+
+def models_loaded() -> bool:
+    """True once both the embedding model and the cross-encoder are in memory."""
+    return _embed_model is not None and _reranker is not None
 
 
 def prewarm() -> None:
@@ -160,6 +183,7 @@ def search(query: str, chunks: list[Chunk], top_k: int = 5,
             "date":  chunks[i].date,
             "text":  chunks[i].text,
             "score": float(s),
+            "similarity": float(sims[i]),
         }
         for i, s in ranked
     ]
@@ -200,6 +224,30 @@ def _fingerprint(chunks: list[Chunk]) -> str:
         h.update(c.text.encode("utf-8", "replace"))
         h.update(b"\x01")
     return h.hexdigest()
+
+
+def coverage(hits: list[dict]) -> dict:
+    """Coverage level for a result set, using the ThinkWithMe/Distill limits.
+
+    Returns level ('high' | 'medium' | 'low'), label, color, the best and
+    average cosine similarity of the returned excerpts, and `percent` — the
+    best match as a whole-number percentage, for showing to users.
+    """
+    if not hits:
+        return {"level": "low", "label": "No sources matched",
+                "color": COVERAGE_LEVELS["low"]["color"],
+                "top_similarity": 0.0, "avg_similarity": 0.0, "percent": 0}
+    sims = [h["similarity"] for h in hits]
+    top, avg = max(sims), sum(sims) / len(sims)
+    if top >= CONF_HIGH_TOP and avg >= CONF_HIGH_AVG:
+        level = "high"
+    elif top >= CONF_MEDIUM_TOP:
+        level = "medium"
+    else:
+        level = "low"
+    return {"level": level, **COVERAGE_LEVELS[level],
+            "top_similarity": round(top, 3), "avg_similarity": round(avg, 3),
+            "percent": max(0, min(100, round(top * 100)))}
 
 
 def retrieval_confidence(hits: list[dict]) -> float:

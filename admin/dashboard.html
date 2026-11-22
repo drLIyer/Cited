@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Cited Admin</title>
+<style>
+:root {
+  --bg: #f5f6fa; --panel: #ffffff; --text: #1b2440; --muted: #5d6680; --line: #e3e6ef;
+  --navy: #2E3F73; --amber: #F5B23E;
+  --ok: #27ae60; --warn: #e67e22; --bad: #e74c3c; --info: #3b82f6; --off: #9aa1b5;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #10152a; --panel: #182040; --text: #e8ebf5; --muted: #a3abc6; --line: #2a3460; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+       font: 14px/1.5 Inter, system-ui, -apple-system, Segoe UI, sans-serif; }
+header { background: var(--navy); color: #fff; padding: 14px 20px; display: flex; gap: 16px;
+         align-items: center; flex-wrap: wrap; }
+header h1 { font-size: 18px; margin: 0; font-weight: 800; letter-spacing: -.2px; }
+header h1 span { color: var(--amber); }
+header .spacer { flex: 1; }
+header button, header label { color: #fff; font-size: 13px; }
+main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 60px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px;
+         margin-bottom: 18px; }
+.panel h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.panel h2 .hint { font-weight: 400; color: var(--muted); font-size: 13px; }
+.status-banner { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.status-banner .big { font-size: 20px; font-weight: 800; }
+.pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px;
+        font-size: 12px; font-weight: 700; color: #fff; white-space: nowrap; }
+.pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .0; }
+.s-ok { background: var(--ok); } .s-degraded, .s-warn, .s-WARNING, .s-medium { background: var(--warn); }
+.s-unavailable, .s-error, .s-ERROR, .s-CRITICAL, .s-low { background: var(--bad); }
+.s-starting, .s-INFO { background: var(--info); } .s-disabled { background: var(--off); }
+.s-high { background: var(--ok); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.tile .k { color: var(--muted); font-size: 12px; }
+.tile .v { font-size: 24px; font-weight: 800; margin-top: 2px; }
+.tile .sub { color: var(--muted); font-size: 12px; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-size: 12px; color: var(--muted); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.table-wrap { overflow-x: auto; }
+.muted { color: var(--muted); }
+.explain { margin-top: 4px; font-size: 13px; }
+.explain b { font-weight: 600; }
+.bar { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--line); margin: 6px 0 10px; }
+.bar div { height: 100%; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+details summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; list-style: none; }
+details summary::-webkit-details-marker { display: none; }
+details .msg { font-weight: 600; word-break: break-word; flex: 1 1 300px; }
+details pre { font-family: var(--mono); font-size: 12px; background: var(--bg); padding: 10px; border-radius: 8px;
+              overflow-x: auto; white-space: pre-wrap; word-break: break-word; margin: 10px 0 0; }
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-weight: 400; font-size: 13px; }
+select, input[type=password], button { font: inherit; border-radius: 8px; border: 1px solid var(--line);
+  padding: 6px 10px; background: var(--panel); color: var(--text); }
+button { cursor: pointer; }
+header button { background: transparent; border-color: rgba(255,255,255,.4); }
+button.primary { background: var(--navy); color: #fff; border-color: var(--navy); }
+#login { max-width: 420px; margin: 80px auto; }
+#login p { color: var(--muted); }
+#login form { display: flex; gap: 8px; }
+#login input { flex: 1; }
+.error-box { color: var(--bad); margin-top: 10px; }
+.q { max-width: 520px; word-break: break-word; }
+.empty { color: var(--muted); padding: 8px 0; }
+.st-open { background: var(--bad); } .st-fixed { background: var(--ok); } .st-regressed { background: #8e44ad; }
+.fix-form { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.fix-form input { flex: 1 1 260px; font: inherit; border-radius: 8px; border: 1px solid var(--line);
+                  padding: 6px 10px; background: var(--panel); color: var(--text); }
+.note { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--ok); background: var(--bg); border-radius: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cited <span>admin</span></h1>
+  <span id="hdr-status"></span>
+  <span class="spacer"></span>
+  <span id="refreshed" class="muted" style="color:#cfd6f0;font-size:12px"></span>
+  <label><input type="checkbox" id="auto" checked> Auto-refresh</label>
+  <button id="refresh">Refresh</button>
+  <button id="signout">Sign out</button>
+</header>
+
+<section id="login" class="panel" hidden>
+  <h2>Sign in</h2>
+  <p>Enter your <code>CITED_ADMIN_TOKEN</code>. It's kept only in this browser tab and cleared when you close it.</p>
+  <form id="login-form">
+    <input type="password" id="token" autocomplete="current-password" placeholder="Admin token" required>
+    <button class="primary" type="submit">Sign in</button>
+  </form>
+  <div id="login-error" class="error-box"></div>
+</section>
+
+<main id="app" hidden>
+  <section class="panel">
+    <div class="status-banner">
+      <span id="status-pill"></span>
+      <span class="big" id="status-summary"></span>
+    </div>
+    <div class="muted" id="status-meta" style="margin-top:6px"></div>
+  </section>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="panel">
+    <h2>Health checks <span class="hint">What each check means and what to do when it isn't OK</span></h2>
+    <div class="table-wrap"><table id="checks"><thead><tr><th>Check</th><th>Status</th><th>Details</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Confidence <span class="hint" id="conf-hint"></span></h2>
+    <div id="conf-bar" class="bar"></div>
+    <div id="conf-legend" class="legend"></div>
+    <div class="table-wrap" style="margin-top:14px"><table id="sources"><thead><tr>
+      <th>Newsletter / feed</th><th class="num">Searches</th><th class="num">Avg best match</th>
+      <th class="num">High</th><th class="num">Moderate</th><th class="num">Limited</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Searches
+      <span class="controls">
+        <select id="search-filter"><option value="low">Limited coverage only</option><option value="">All searches</option></select>
+      </span>
+    </h2>
+    <div class="table-wrap"><table id="searches"><thead><tr>
+      <th>When</th><th>Newsletter / feed</th><th>Question</th><th>Confidence</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Threats blocked <span class="hint">Attacks and abuse Cited stopped before they did anything</span></h2>
+    <div class="table-wrap"><table id="threats"><thead><tr>
+      <th>Threat</th><th>What it is</th><th class="num">24 h</th><th class="num">7 days</th><th class="num">30 days</th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Errors by type
+      <span class="controls">
+        <select id="err-category">
+          <option value="error">Errors &amp; bugs</option>
+          <option value="security">Threats</option>
+          <option value="usage">Bad user input</option>
+          <option value="health">Health changes</option>
+          <option value="">Everything</option>
+        </select>
+        <select id="err-state">
+          <option value="">Open, fixed &amp; regressed</option>
+          <option value="open">Open only</option>
+          <option value="regressed">Regressed only</option>
+          <option value="fixed">Fixed only</option>
+        </select>
+        <select id="err-hours"><option value="24">Last 24 hours</option><option value="168">Last 7 days</option><option value="720" selected>Last 30 days</option></select>
+      </span>
+    </h2>
+    <p class="muted" style="margin:0 0 10px">Each row is one kind of problem; repeats are counted, not listed. Mark a bug
+      <b>fixed</b> once you've deployed a fix — if it happens again it's flagged <b>regressed</b>.</p>
+    <div id="errors"></div>
+  </section>
+</main>
+<script src="/admin/app.js"></script>
+</body>
+</html>

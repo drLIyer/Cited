@@ -25,10 +25,15 @@ Our hosting provider (Render) also keeps standard server logs. These include the
 
 **We do not collect:** names, email addresses, passwords, payment information, or the rest of your Claude conversation. Cited only sees what Claude sends in a search request.
 
+### Error and security logs
+
+To keep the service working and secure, the hosted service also keeps an error log. It records technical problems (for example "couldn't fetch this feed"), blocked attacks (for example a request to fetch a private network address), and rate-limit hits. These entries may include the newsletter or feed URL involved and the error message. They **do not include your question or your IP address**. Error log entries are deleted automatically after 30 days.
+
 ## How we use it
 
 - To answer your search request.
 - To understand usage (for example, which newsletters are popular) and to fix problems and improve search quality.
+- To detect and block abuse and attacks against the service.
 
 We do not use this data for advertising, and we do not try to identify you.
 
