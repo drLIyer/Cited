@@ -2,11 +2,12 @@
   "name": "cited",
   "version": "1.0.0",
   "description": "Sourced answers from Substack, Medium, and RSS/podcast feeds. Hybrid search over a newsletter's public posts, returning ranked excerpts with titles, dates, and links so Claude can cite them.",
+  "icon": ".claude-plugin/icon.png",
   "author": {
     "name": "drliyer"
   },
-  "homepage": "https://github.com/drliyer/cited",
-  "repository": "https://github.com/drliyer/cited",
+  "homepage": "https://github.com/drLIyer/Cited",
+  "repository": "https://github.com/drLIyer/Cited",
   "license": "MIT",
   "keywords": [
     "substack",

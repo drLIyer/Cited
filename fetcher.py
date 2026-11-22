@@ -50,7 +50,7 @@ MAX_FETCH_BYTES = int(os.getenv("CITED_MAX_FETCH_BYTES", str(10 * 1024 * 1024)))
 MAX_REDIRECTS  = 5
 ALLOW_PRIVATE  = os.getenv("CITED_ALLOW_PRIVATE_URLS") == "1"
 USE_PROXY      = os.getenv("CITED_USE_PROXY") == "1"
-USER_AGENT     = "Mozilla/5.0 (compatible; Cited/1.0; +https://github.com/drliyer/cited)"
+USER_AGENT     = "Mozilla/5.0 (compatible; Cited/1.0; +https://github.com/drLIyer/Cited)"
 
 _CACHE: dict[str, tuple[list, float]] = {}
 

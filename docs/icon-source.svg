@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2E3F73"/>
+      <stop offset="1" stop-color="#161E38"/>
+    </linearGradient>
+    <g id="q">
+      <!-- one quote mark: round head with a tail sweeping up -->
+      <circle cx="0" cy="0" r="92"/>
+      <path d="M -92 0 C -92 -150 -20 -250 110 -290 L 128 -238 C 40 -200 0 -130 4 -60 Z"/>
+    </g>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <g transform="translate(-65 56)">
+  <!-- open quote -->
+  <g fill="#FFFFFF">
+    <use href="#q" x="330" y="610"/>
+    <use href="#q" x="590" y="610"/>
+  </g>
+  <!-- superscript citation marker [ • ] -->
+  <g transform="translate(20 -10)">
+  <g fill="none" stroke="#F5B23E" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M 768 236 L 738 236 L 738 384 L 768 384"/>
+    <path d="M 852 236 L 882 236 L 882 384 L 852 384"/>
+  </g>
+  <circle cx="810" cy="310" r="26" fill="#F5B23E"/>
+  </g>
+  </g>
+</svg>
