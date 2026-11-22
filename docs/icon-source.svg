@@ -26,6 +26,6 @@
   </g>
   <!-- wordmark (Inter Display Bold, SIL OFL) -->
   <text x="512" y="810" text-anchor="middle" fill="#FFFFFF"
-        font-family="Inter Display, Inter, sans-serif" font-weight="700"
+        font-family="Inter Display" font-weight="900"
         font-size="200" letter-spacing="-4">Cited</text>
 </svg>
