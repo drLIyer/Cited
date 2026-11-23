@@ -53,6 +53,7 @@ import sys
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Optional
 from urllib.parse import parse_qs
 
@@ -73,6 +74,7 @@ import events as _events
 import healer as _healer_mod
 import digest as _digest
 import metrics as _metrics
+import library as _library_mod
 from ratelimit import ClientRateLimit
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -109,6 +111,19 @@ _HEALER = _healer_mod.Healer(
     block_ip=_RATE.block,
 )
 
+# Library: permanent, incrementally-updated full-archive indexes (see library.py).
+_lib_sources, _lib_pending = _library_mod.load_sources()
+_LIBRARY = _library_mod.Library(
+    enabled=_HTTP_MODE and os.getenv("CITED_LIBRARY", "1") != "0",
+    db_path=lambda: Path(os.getenv("CITED_LIBRARY_DB") or (_history.DB_PATH.parent / "library.db")),
+    sources=_lib_sources, pending=_lib_pending,
+    max_chars=int(os.getenv("CITED_LIBRARY_POST_CHARS", "60000")),
+)
+_LIBRARY_NOTE = (
+    "Full archives of free posts are pre-indexed (fast, complete) for: "
+    + ", ".join(f"{s['name']} ({s['url']})" for s in _lib_sources) + ".\n\n"
+) if _LIBRARY.enabled and _lib_sources else ""
+
 mcp = MCPServer(
     "Cited",
     instructions=(
@@ -119,6 +134,7 @@ mcp = MCPServer(
         "(often only the most recent 10–50 items). "
         f"Each post is indexed up to its first {_fetcher.POST_CHARS:,} characters. "
         "Paywalled content is not included.\n\n"
+        + _LIBRARY_NOTE +
 
         "## When to use it\n"
         "Use search_newsletter when the user asks what a specific newsletter, author, "
@@ -157,7 +173,11 @@ mcp = MCPServer(
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
-def _coverage_note(n_posts: int) -> str:
+def _coverage_note(n_posts: int, library_updated: Optional[float] = None) -> str:
+    if library_updated is not None:
+        mins = max(1, round((time.time() - library_updated) / 60))
+        return (f"Searched the full archive of {n_posts} free posts (Cited's pre-built index, "
+                f"refreshed {mins} min ago). Paid-only posts are not included.")
     return (f"Searched {n_posts} public posts/episodes (Substack: up to {_fetcher.MAX_POSTS} "
             f"most recent; feeds: whatever the feed publishes). Each post is indexed up to "
             f"its first {_fetcher.POST_CHARS:,} characters.")
@@ -171,12 +191,21 @@ _recent_levels: deque = deque(maxlen=_LOW_CONF_WINDOW)
 
 
 async def _retrieve(url: str, query: str, top_k: int):
-    """Fetch posts (async I/O) then run chunking + search in a worker thread
-    so CPU-bound model inference doesn't block the event loop.
-    Returns (posts, hits, coverage) — coverage per pipeline.coverage()."""
+    """Search a source. Library newsletters use their stored full-archive index;
+    anything else is fetched (async I/O) and searched in a worker thread so
+    CPU-bound model inference doesn't block the event loop.
+    Returns (n_posts, hits, coverage, library_updated_at_or_None)."""
+    lib_key = _LIBRARY.resolve(url)
+    if lib_key and _LIBRARY.ready(lib_key):
+        await _fetcher._check_url(_fetcher.upgrade_to_https(url))   # same URL rules as live fetches
+        hits, n = await asyncio.to_thread(_LIBRARY.search, lib_key, query, top_k)
+        cov = _pipeline.coverage(hits)
+        _recent_levels.append(cov["level"])
+        return n, hits, cov, _LIBRARY.updated_at(lib_key)
+
     posts = await _fetcher.get_posts(url)
     if not posts:
-        return posts, [], _pipeline.coverage([])
+        return 0, [], _pipeline.coverage([]), None
 
     def _work():
         chunks = _pipeline.chunk_posts(posts)
@@ -186,7 +215,7 @@ async def _retrieve(url: str, query: str, top_k: int):
 
     hits, cov = await asyncio.to_thread(_work)
     _recent_levels.append(cov["level"])
-    return posts, hits, cov
+    return len(posts), hits, cov, None
 
 
 def _low_coverage_disclaimer(source: str, cov: dict) -> str:
@@ -309,8 +338,8 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
     except (TypeError, ValueError):
         top_k = 5
     try:
-        posts, hits, cov = await _retrieve(url, query, top_k)
-        if not posts:
+        n_posts, hits, cov, lib_updated = await _retrieve(url, query, top_k)
+        if not n_posts:
             return json.dumps({
                 "error": "No public posts found. The newsletter may be empty or fully paywalled.",
                 "url": url,
@@ -318,8 +347,8 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
 
         result: dict = {
             "newsletter": url,
-            "posts_indexed": len(posts),
-            "coverage_note": _coverage_note(len(posts)),
+            "posts_indexed": n_posts,
+            "coverage_note": _coverage_note(n_posts, lib_updated),
             "confidence": _confidence_payload(cov),
             "low_confidence": cov["level"] == "low",
             "results": [
@@ -379,6 +408,15 @@ async def list_posts(url: str, ctx: Optional[Context] = None) -> str:
     if limited:
         return f"Error: {limited}"
     try:
+        lib_key = _LIBRARY.resolve(url)
+        if lib_key and _LIBRARY.ready(lib_key):
+            rows = await asyncio.to_thread(_LIBRARY.posts, lib_key, 300)
+            total = next((r["_total"] for r in rows if "_total" in r), None)
+            rows = [r for r in rows if "_total" not in r]
+            head = (f"{total} free posts in Cited's archive of {url}; showing the {len(rows)} most recent\n"
+                    if total else f"{len(rows)} free posts in Cited's archive of {url}\n")
+            return "\n".join([head] + [f"• [{r['date']}] {r['title']}\n  {r['url']}" for r in rows])
+
         posts = await _fetcher.get_posts(url)
         if not posts:
             return f"No public posts found at {url}."
@@ -425,8 +463,8 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
         import anthropic
 
         try:
-            posts, hits, cov = await _retrieve(url, question, 5)
-            if not posts:
+            n_posts, hits, cov, _lib = await _retrieve(url, question, 5)
+            if not n_posts:
                 return json.dumps({
                     "error": "No public posts found. The newsletter may be empty or fully paywalled.",
                     "url": url,
@@ -468,7 +506,7 @@ if not _HTTP_MODE and os.getenv("ANTHROPIC_API_KEY"):
                 "low_confidence": cov["level"] == "low",
                 "disclaimer":     disclaimer,
                 "sources":        sources,
-                "posts_indexed":  len(posts),
+                "posts_indexed":  n_posts,
             }
 
             await _save_history(url, question, answer, sources, cov, "ask")
@@ -678,6 +716,7 @@ _HEALTH = _health.HealthChecker(
     recent_levels=lambda: list(_recent_levels),
     low_conf_alert=_LOW_CONF_ALERT,
     recent_errors=_recent_errors_last_hour,
+    library_status=lambda: _LIBRARY.status(),
 )
 
 
@@ -735,7 +774,8 @@ async def _admin_api(path: str, qs: dict) -> dict:
                   if _LOG_QUERIES else None)
         return {"health": health, "searches": searches, "events": events_summary,
                 "security": security, "fixes": fixes, "autofix": autofix,
-                "digest": _digest.status_for_dashboard(), "growth": growth}
+                "digest": _digest.status_for_dashboard(), "growth": growth,
+                "library": await asyncio.to_thread(_LIBRARY.status)}
     if path == "/admin/api/searches":
         if not _LOG_QUERIES:
             return {"enabled": False, "searches": []}
@@ -754,6 +794,12 @@ async def _admin_api(path: str, qs: dict) -> dict:
 
 
 async def _admin_action(path: str, body: dict) -> tuple[int, dict]:
+    if path == "/admin/api/library/refresh":
+        key = str(body.get("key") or "")
+        if not _LIBRARY.has(key):
+            return 404, {"error": "Not a library source"}
+        asyncio.create_task(_LIBRARY.refresh(key, full=bool(body.get("full"))))
+        return 202, {"ok": True, "started": key}
     if path == "/admin/api/digest/test":
         if not _digest.config()["enabled"]:
             return 400, {"error": "Digest isn't configured: set CITED_DIGEST_TO and RESEND_API_KEY "
@@ -798,6 +844,16 @@ async def _read_json_body(receive, limit: int = 16_384) -> Optional[dict]:
 
 
 _monitor_task: Optional[asyncio.Task] = None
+_library_task: Optional[asyncio.Task] = None
+
+
+def _start_library() -> None:
+    """Start the library's background refresher (loads stored indexes first)."""
+    global _library_task
+    if not _LIBRARY.enabled or _library_task is not None:
+        return
+    interval = float(os.getenv("CITED_LIBRARY_REFRESH_MINUTES", "60")) * 60
+    _library_task = asyncio.create_task(_LIBRARY.run_forever(interval, _pipeline.models_loaded))
 
 
 async def _health_monitor(interval: float) -> None:
@@ -913,7 +969,7 @@ def build_http_app(monitor_interval: Optional[float] = None):
                 await _send_file(send, "app.js", b"text/javascript; charset=utf-8", method == "HEAD")
         elif path and path.startswith("/admin/api/"):
             is_action = path in ("/admin/api/resolve", "/admin/api/reopen", "/admin/api/forget",
-                                 "/admin/api/digest/test")
+                                 "/admin/api/digest/test", "/admin/api/library/refresh")
             if method != ("POST" if is_action else "GET"):
                 await _send_json(send, 405, {"error": "Method not allowed"})
                 return
@@ -997,6 +1053,7 @@ def build_http_app(monitor_interval: Optional[float] = None):
                 message = await receive()
                 if message["type"] == "lifespan.startup" and _monitor_task is None:
                     _monitor_task = asyncio.create_task(_health_monitor(monitor_interval))
+                    _start_library()
                 return message
             return await app(scope, lifespan_receive, send)
         try:
@@ -1018,13 +1075,10 @@ if __name__ == "__main__":
         port = int(os.getenv("PORT", "8000"))
         log.info("Starting Cited HTTP server on port %d (path /mcp)", port)
 
-        # Pre-warm models + index popular newsletters at startup.
-        # CITED_PREWARM_URLS = comma-separated list (default: Lenny + Aakash).
+        # Pre-warm models at startup. Popular newsletters live in the library
+        # (library.json); CITED_PREWARM_URLS can still warm extra sources in memory.
         _PREWARM_URLS = [
-            u.strip() for u in os.getenv(
-                "CITED_PREWARM_URLS",
-                "https://www.lennysnewsletter.com,https://news.aakashg.com",
-            ).split(",") if u.strip()
+            u.strip() for u in os.getenv("CITED_PREWARM_URLS", "").split(",") if u.strip()
         ]
 
         async def _prewarm_all():

@@ -66,7 +66,7 @@ def _embed():
             if _embed_model is None:
                 from sentence_transformers import SentenceTransformer
                 log.info("Loading embedding model …")
-                _embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+                _embed_model = SentenceTransformer(EMBED_MODEL_NAME)
     return _embed_model
 
 
@@ -146,43 +146,63 @@ def _tokenize(text: str) -> list[str]:
 
 # ── Search ─────────────────────────────────────────────────────────────────────
 
+EMBED_MODEL_NAME = "all-MiniLM-L6-v2"
+
+
 def search(query: str, chunks: list[Chunk], top_k: int = 5,
            cache_key: str | None = None) -> list[dict]:
+    """Search freshly fetched chunks (embeddings cached in memory per newsletter)."""
     if not chunks:
         return []
+    c_embs = _get_cached_embeddings(cache_key, chunks, _embed())
+    return search_index(query, chunks, c_embs, build_bm25(chunks), top_k)
 
+
+def build_bm25(chunks: list[Chunk]):
+    from rank_bm25 import BM25Okapi
+    return BM25Okapi([_tokenize(c.text) for c in chunks])
+
+
+def embed_texts(texts: list[str]) -> np.ndarray:
+    """L2-normalised float32 embeddings for a batch of texts."""
+    if not texts:
+        return np.zeros((0, 384), dtype=np.float32)
+    embs = _embed().encode(texts, convert_to_numpy=True, batch_size=64,
+                           show_progress_bar=False).astype(np.float32)
+    embs /= np.linalg.norm(embs, axis=1, keepdims=True) + 1e-9
+    return embs
+
+
+def _top(scores, k: int) -> list[int]:
+    scores = np.asarray(scores, dtype=np.float32)
+    if k >= len(scores):
+        return list(np.argsort(-scores, kind="stable"))
+    part = np.argpartition(-scores, k)[:k]
+    return list(part[np.argsort(-scores[part], kind="stable")])
+
+
+def search_index(query: str, chunks: list[Chunk], c_embs: np.ndarray, bm25,
+                 top_k: int = 5) -> list[dict]:
+    """Hybrid BM25 + vector search → RRF → cross-encoder rerank over a prepared index."""
     n = len(chunks)
+    if n == 0:
+        return []
     k = min(CANDIDATES, n)
 
-    # BM25 (fast, no model needed)
-    from rank_bm25 import BM25Okapi
-    corpus      = [_tokenize(c.text) for c in chunks]
-    bm25        = BM25Okapi(corpus)
-    bm25_scores = bm25.get_scores(_tokenize(query))
-    bm25_top    = sorted(range(n), key=lambda i: bm25_scores[i], reverse=True)[:k]
+    bm25_top = _top(bm25.get_scores(_tokenize(query)), k)
 
-    # Vector — use cached embeddings when available
-    model = _embed()
-    q_emb = model.encode([query], convert_to_numpy=True)[0].astype(np.float32)
-    q_emb /= np.linalg.norm(q_emb) + 1e-9
+    q_emb = embed_texts([query])[0]
+    sims  = c_embs @ q_emb
+    vec_top = _top(sims, k)
 
-    c_embs = _get_cached_embeddings(cache_key, chunks, model)
-    sims   = c_embs @ q_emb
-    vec_top = sorted(range(n), key=lambda i: float(sims[i]), reverse=True)[:k]
-
-    # RRF
     rrf: dict[int, float] = {}
     for rank, idx in enumerate(bm25_top):
-        rrf[idx] = rrf.get(idx, 0) + 1 / (RRF_K + rank + 1)
+        rrf[int(idx)] = rrf.get(int(idx), 0) + 1 / (RRF_K + rank + 1)
     for rank, idx in enumerate(vec_top):
-        rrf[idx] = rrf.get(idx, 0) + 1 / (RRF_K + rank + 1)
+        rrf[int(idx)] = rrf.get(int(idx), 0) + 1 / (RRF_K + rank + 1)
     rrf_top = sorted(rrf, key=lambda i: rrf[i], reverse=True)[:k]
 
-    # Cross-encoder reranking
-    reranker = _rerank()
-    pairs    = [(query, chunks[i].text) for i in rrf_top]
-    scores   = reranker.predict(pairs)
-
+    scores = _rerank().predict([(query, chunks[i].text) for i in rrf_top])
     ranked = sorted(zip(rrf_top, scores), key=lambda x: x[1], reverse=True)[:top_k]
 
     return [

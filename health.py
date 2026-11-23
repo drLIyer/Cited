@@ -111,6 +111,7 @@ CHECK_LABELS = {
     "event_loop":      "Responsiveness",
     "search_quality":  "Search quality (confidence)",
     "db_size":         "Database size",
+    "library":         "Newsletter library",
     "recent_errors":   "Recent errors",
 }
 
@@ -142,6 +143,11 @@ EXPLAIN = {
     ("disk", WARN): (
         "Free disk space is low; the history and error logs may soon stop saving.",
         "Increase the persistent disk size or lower CITED_HISTORY_RETENTION_DAYS."),
+    ("library", WARN): (
+        "Some library newsletters couldn't be refreshed. Searches still use their last stored index, "
+        "but new posts aren't being added.",
+        "Open the Library panel to see the error. A changed URL or a feed that blocks requests is the "
+        "usual cause — fix the URL in library.json, then press Refresh."),
     ("db_size", WARN): (
         "The history/error database is getting large, which slows the dashboard and uses disk.",
         "Lower CITED_HISTORY_RETENTION_DAYS or CITED_EVENT_RETENTION_DAYS, or raise "
@@ -195,6 +201,7 @@ class HealthChecker:
                  recent_levels: Callable[[], list[str]] | None = None,
                  low_conf_alert: float = 0.5,
                  recent_errors: Callable[[], int | None] | None = None,
+                 library_status: Callable[[], dict] | None = None,
                  error_alert: int = 5):
         self._list_tools  = list_tools
         self._log_queries = log_queries
@@ -205,6 +212,7 @@ class HealthChecker:
         self._recent_levels = recent_levels
         self._low_conf_alert = low_conf_alert
         self._recent_errors = recent_errors
+        self._library_status = library_status
         self._error_alert   = error_alert
         self.last_status: str | None = None
         self.started      = time.time()
@@ -337,6 +345,19 @@ class HealthChecker:
                                            "Limited coverage.")
         return out
 
+    def _check_library(self) -> dict:
+        st = self._library_status() if self._library_status else {"enabled": False}
+        if not st.get("enabled"):
+            return {"status": DISABLED}
+        srcs = st["sources"]
+        ready = sum(1 for s in srcs if s["state"] in ("ready", "refreshing", "stale"))
+        failing = [s["name"] for s in srcs if s["state"] in ("error", "stale")]
+        out = {"status": OK, "sources": len(srcs), "ready": ready,
+               "posts": sum(s["posts"] for s in srcs), "needs_url": len(st.get("pending", []))}
+        if failing:
+            out.update(status=WARN, detail="Refresh failing for: " + ", ".join(failing))
+        return out
+
     def _check_recent_errors(self) -> dict:
         n = self._recent_errors() if self._recent_errors else None
         if n is None:
@@ -382,6 +403,10 @@ class HealthChecker:
         checks["event_loop"] = await self._check_event_loop()
         checks["db_size"]        = self._check_db_size()
         checks["search_quality"] = self._check_search_quality()
+        try:
+            checks["library"] = await asyncio.to_thread(self._check_library)
+        except Exception as exc:
+            checks["library"] = {"status": WARN, "detail": f"Could not read library status: {exc}"}
         try:
             checks["recent_errors"] = await asyncio.to_thread(self._check_recent_errors)
         except Exception as exc:

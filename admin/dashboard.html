@@ -90,6 +90,7 @@ button.primary { background: var(--navy); color: #fff; border-color: var(--navy)
 .fix-form { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .fix-form input { flex: 1 1 260px; font: inherit; border-radius: 8px; border: 1px solid var(--line);
                   padding: 6px 10px; background: var(--panel); color: var(--text); }
+.s-ready { background: var(--ok); } .s-stale { background: var(--warn); } .s-building, .s-refreshing { background: var(--info); }
 .r-worked, .r-applied { background: var(--ok); } .r-failed { background: var(--bad); } .r-skipped { background: var(--warn); }
 .note { margin-top: 8px; padding: 8px 10px; border-left: 3px solid var(--ok); background: var(--bg); border-radius: 6px; }
 </style>
@@ -137,6 +138,14 @@ button.primary { background: var(--navy); color: #fff; border-color: var(--navy)
     </details>
     <p class="muted" style="font-size:12.5px;margin:10px 0 0">Clients are approximate: claude.ai traffic arrives from
       Anthropic's servers, so it undercounts claude.ai users (Claude Code users are counted). IPs are never stored.</p>
+  </section>
+
+  <section class="panel" id="library-panel">
+    <h2>Newsletter library <span class="hint">Full archives of free posts, stored permanently and refreshed incrementally</span></h2>
+    <div class="table-wrap"><table id="library"><thead><tr>
+      <th>Newsletter</th><th>Status</th><th class="num">Posts</th><th class="num">Passages</th>
+      <th>Last refresh</th><th class="num">Added last time</th><th></th></tr></thead><tbody></tbody></table></div>
+    <div id="library-pending" class="muted" style="margin-top:10px;font-size:13px"></div>
   </section>
 
   <section class="panel">

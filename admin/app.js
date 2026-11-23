@@ -98,6 +98,38 @@ function renderOverview(o) {
   renderAutofix(af);
   renderDigest(o.digest || {});
   renderGrowth(o.growth);
+  renderLibrary(o.library || {});
+}
+
+const LIB_STATE = { ready: "Ready", building: "Building…", refreshing: "Refreshing…", error: "Error",
+                    stale: "Stale — last refresh failed" };
+
+function renderLibrary(lib) {
+  const panel = document.getElementById("library-panel");
+  panel.hidden = !lib.enabled;
+  if (!lib.enabled) return;
+  const body = document.querySelector("#library tbody");
+  body.replaceChildren(...(lib.sources.length ? lib.sources.map((s) => {
+    const btn = el("button", { type: "button" }, "Refresh now");
+    btn.disabled = s.state === "refreshing";
+    btn.addEventListener("click", async () => {
+      btn.disabled = true; btn.textContent = "Started…";
+      try { await api("/admin/api/library/refresh", { key: s.key }); setTimeout(load, 1500); }
+      catch (e) { btn.disabled = false; btn.textContent = "Refresh now"; alert(`Could not start: ${e.message}`); }
+    });
+    return el("tr", {},
+      el("td", {}, el("b", {}, s.name), el("div", { class: "muted" }, s.url),
+        s.error ? el("div", { style: "color:var(--bad);font-size:13px" }, s.error) : null),
+      el("td", {}, pill(s.state, LIB_STATE[s.state] || s.state)),
+      el("td", { class: "num" }, s.posts), el("td", { class: "num" }, s.chunks),
+      el("td", {}, s.last_ok ? when(s.last_ok) : "never"),
+      el("td", { class: "num" }, s.last_added),
+      el("td", {}, btn));
+  }) : [el("tr", {}, el("td", { colspan: 7, class: "empty" }, "No newsletters in library.json yet."))]));
+  const pending = document.getElementById("library-pending");
+  pending.replaceChildren(...(lib.pending.length ? [
+    el("b", {}, "Needs a URL: "), lib.pending.map((p) => p.name).join(", "),
+    " — add each newsletter's address to library.json and redeploy."] : []));
 }
 
 const SVG = "http://www.w3.org/2000/svg";

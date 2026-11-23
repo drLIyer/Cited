@@ -33,6 +33,7 @@ import socket
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from typing import Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
 import httpcore
@@ -111,6 +112,10 @@ class Post:
     url: str
     date: str
     text: str
+    audience: str = ""      # Substack: everyone / only_paid / founding / only_free
+
+
+_PAID_AUDIENCES = {"only_paid", "founding"}
 
 
 # ── Safe HTTP ──────────────────────────────────────────────────────────────────
@@ -383,7 +388,18 @@ def _strip_html(html: str) -> str:
 
 # ── Substack fetcher ───────────────────────────────────────────────────────────
 
-async def _fetch_substack(key: str) -> list[Post]:
+async def _fetch_substack(key: str, max_posts: Optional[int] = None,
+                          max_chars: Optional[int] = None, free_only: bool = False,
+                          stop: Optional[Callable[[list[Post]], bool]] = None) -> list[Post]:
+    """Fetch posts newest-first.
+
+    max_posts / max_chars default to MAX_POSTS / POST_CHARS (None in the library
+    means the full archive). free_only skips paid-only posts (their API body is
+    just a preview). `stop(page_posts)` is called after each page; returning
+    True stops paging — used for incremental refreshes.
+    """
+    max_posts = MAX_POSTS if max_posts is None else max_posts
+    max_chars = POST_CHARS if max_chars is None else max_chars
     base   = _api_base(key)
     posts: list[Post] = []
     cursor: str | None = None
@@ -436,25 +452,33 @@ async def _fetch_substack(key: str) -> list[Post]:
             if not batch:
                 break
 
+            page: list[Post] = []
             for p in batch:
                 if not isinstance(p, dict):
+                    continue
+                audience = str(p.get("audience") or "")
+                if free_only and audience in _PAID_AUDIENCES:
                     continue
                 body = p.get("body_html") or p.get("truncated_body_text") or ""
                 text = _strip_html(body)
                 if len(text) < 60:
                     continue
-                posts.append(Post(
+                page.append(Post(
                     title=p.get("title") or "Untitled",
                     url=(p.get("canonical_url") or f"{base}/p/{p.get('slug', '')}"),
                     date=(p.get("post_date") or "")[:10],
-                    text=text[:POST_CHARS],
+                    text=text[:max_chars],
+                    audience=audience,
                 ))
+            posts.extend(page)
 
-            if not more or len(posts) >= MAX_POSTS:
+            if not more or (max_posts and len(posts) >= max_posts):
+                break
+            if stop is not None and stop(page):
                 break
 
     log.info("Fetched %d posts from %s (Substack)", len(posts), key)
-    return posts[:MAX_POSTS]
+    return posts[:max_posts] if max_posts else posts
 
 
 # ── Medium fetcher (RSS) ───────────────────────────────────────────────────────
@@ -502,9 +526,12 @@ async def _fetch_feed_bytes(url: str, label: str) -> bytes:
     return resp.content
 
 
-def _parse_rss_items(channel: ET.Element) -> list[Post]:
+def _parse_rss_items(channel: ET.Element, max_posts: Optional[int] = None,
+                     max_chars: Optional[int] = None) -> list[Post]:
+    max_posts = MAX_POSTS if max_posts is None else max_posts
+    max_chars = POST_CHARS if max_chars is None else max_chars
     posts: list[Post] = []
-    for item in channel.findall("item")[:MAX_POSTS]:
+    for item in channel.findall("item")[:max_posts or None]:
         title_el = item.find("title")
         link_el  = item.find("link")
         date_el  = _first(item.find("pubDate"), item.find("dc:date", _NS))
@@ -527,7 +554,7 @@ def _parse_rss_items(channel: ET.Element) -> list[Post]:
 
         if len(text) >= 60:
             posts.append(Post(title=title or "Untitled", url=link,
-                              date=_normalize_date(date), text=text[:POST_CHARS]))
+                              date=_normalize_date(date), text=text[:max_chars]))
     return posts
 
 
@@ -545,7 +572,8 @@ def _normalize_date(raw: str) -> str:
     return raw
 
 
-async def _fetch_medium(url: str) -> list[Post]:
+async def _fetch_medium(url: str, max_posts: Optional[int] = None,
+                        max_chars: Optional[int] = None) -> list[Post]:
     rss_url = _medium_rss_url(url)
     log.info("Fetching Medium RSS: %s", rss_url)
     content = await _fetch_feed_bytes(rss_url, "Medium RSS")
@@ -554,7 +582,7 @@ async def _fetch_medium(url: str) -> list[Post]:
     channel = root.find("channel")
     if channel is None:
         channel = root
-    posts = [p for p in _parse_rss_items(channel) if p.url]
+    posts = [p for p in _parse_rss_items(channel, max_posts, max_chars) if p.url]
 
     log.info("Fetched %d posts from %s (Medium RSS)", len(posts), url)
     return posts
@@ -577,8 +605,11 @@ def _atom_link(entry: ET.Element, tag) -> str:
     return ""
 
 
-async def _fetch_rss(url: str) -> list[Post]:
+async def _fetch_rss(url: str, max_posts: Optional[int] = None,
+                     max_chars: Optional[int] = None) -> list[Post]:
     """Fetch posts/episodes from any RSS 2.0, Atom, or podcast feed URL."""
+    max_posts = MAX_POSTS if max_posts is None else max_posts
+    max_chars = POST_CHARS if max_chars is None else max_chars
     log.info("Fetching RSS feed: %s", url)
     content = await _fetch_feed_bytes(url, "RSS feed")
 
@@ -602,7 +633,7 @@ async def _fetch_rss(url: str) -> list[Post]:
     if root.tag in (f"{{{_ATOM_NS}}}feed", "feed"):
         ns = _ATOM_NS if root.tag.startswith("{") else ""
         tag = (lambda t: f"{{{ns}}}{t}") if ns else (lambda t: t)
-        for entry in root.findall(tag("entry"))[:MAX_POSTS]:
+        for entry in root.findall(tag("entry"))[:max_posts or None]:
             title_el   = entry.find(tag("title"))
             updated_el = _first(entry.find(tag("published")), entry.find(tag("updated")))
             content_el = _first(entry.find(tag("content")), entry.find(tag("summary")))
@@ -614,14 +645,14 @@ async def _fetch_rss(url: str) -> list[Post]:
 
             if len(text) >= 60:
                 posts.append(Post(title=title or "Untitled", url=link, date=date,
-                                  text=text[:POST_CHARS]))
+                                  text=text[:max_chars]))
 
     else:
         # ── RSS 2.0 (includes podcast feeds) ──
         channel = root.find("channel")
         if channel is None:
             channel = root
-        posts = _parse_rss_items(channel)
+        posts = _parse_rss_items(channel, max_posts, max_chars)
 
     log.info("Fetched %d posts/episodes from %s (RSS)", len(posts), url)
     return posts
@@ -658,6 +689,24 @@ async def get_posts(url: str) -> list[Post]:
 
     _CACHE[key] = (posts, time.time())
     return posts
+
+
+async def fetch_archive(url: str, *, max_chars: int, free_only: bool = True,
+                        stop: Optional[Callable[[list[Post]], bool]] = None) -> list[Post]:
+    """Fetch as much of a source as it exposes (used by the library; no cache).
+
+    Substack: every public post (paged, newest first; `stop` can end early).
+    Medium / RSS / podcast feeds: everything the feed currently lists.
+    """
+    url = upgrade_to_https(url)
+    source = _detect_source(url)
+    await _check_url(url)
+    if source == "medium":
+        return await _fetch_medium(url, max_posts=0, max_chars=max_chars)
+    if source == "rss":
+        return await _fetch_rss(url, max_posts=0, max_chars=max_chars)
+    return await _fetch_substack(parse_subdomain(url), max_posts=0, max_chars=max_chars,
+                                 free_only=free_only, stop=stop)
 
 
 def invalidate(url: str) -> None:
