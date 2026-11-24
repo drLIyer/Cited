@@ -97,3 +97,12 @@ async def test_library_builds_and_refreshes_wordpress_site(tmp_path, mock_http):
     r = await L.refresh("news.example")
     assert r["new_or_changed_posts"] == 1 and r["posts"] == 26
     assert f"{SITE}/feed/?paged=3" not in mock_http["__seen__"]
+
+
+async def test_archive_from_a_section_page_like_svpg_articles(mock_http):
+    """A library URL that's a section page (e.g. svpg.com/articles) finds the site feed."""
+    mock_http[f"{SITE}/articles"] = httpx.Response(200, content=HTML, headers={"content-type": "text/html"})
+    mock_http[f"{SITE}/feed/"] = httpx.Response(200, content=rss(range(1, 11)))
+    mock_http[f"{SITE}/feed/?paged=2"] = httpx.Response(200, content=rss(range(11, 14)))
+    posts = await fetcher.fetch_archive(f"{SITE}/articles", max_chars=60_000)
+    assert len(posts) == 13
