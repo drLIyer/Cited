@@ -54,7 +54,9 @@ def test_repo_library_json_is_valid():
     ready, pending = library.load_sources(library.DEFAULT_FILE)
     names = [s["name"] for s in ready] + [p["name"] for p in pending]
     assert "Lenny's Newsletter" in names and len(names) == 8
-    assert {s["name"]: s["url"] for s in ready}["Deborah Liu"] == "https://debliu.substack.com"
+    urls = {s["name"]: s["url"] for s in ready}
+    assert urls["Deborah Liu"] == "https://debliu.substack.com"
+    assert urls["The Skip (Nikhyl Singhal)"] == "https://theskip.substack.com"
     assert all(s["url"].startswith("https://") for s in ready)
 
 
