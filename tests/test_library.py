@@ -50,13 +50,24 @@ def test_load_sources(tmp_path, monkeypatch):
     assert pending == [{"name": "B", "note": "tbd"}]
 
 
+@pytest.mark.parametrize("raw,clean", [
+    ("https://cutlefish.substack.com/?utm_source=chatgpt.com", "https://cutlefish.substack.com"),
+    ("https://amivora.substack.com/p/the-full-catalogue", "https://amivora.substack.com"),
+    ("http://www.news.example/?ref=home&utm_medium=x#top", "https://www.news.example"),
+    ("https://feeds.example/podcast.xml?key=abc&utm_campaign=y", "https://feeds.example/podcast.xml?key=abc"),
+])
+def test_clean_url(raw, clean):
+    assert library._clean_url(raw) == clean
+
+
 def test_repo_library_json_is_valid():
     ready, pending = library.load_sources(library.DEFAULT_FILE)
     names = [s["name"] for s in ready] + [p["name"] for p in pending]
-    assert "Lenny's Newsletter" in names and len(names) == 8
+    assert "Lenny's Newsletter" in names and len(names) == 9
     urls = {s["name"]: s["url"] for s in ready}
     assert urls["Deborah Liu"] == "https://debliu.substack.com"
     assert urls["The Skip (Nikhyl Singhal)"] == "https://theskip.substack.com"
+    assert urls["The Beautiful Mess (John Cutler)"] == "https://cutlefish.substack.com"
     assert all(s["url"].startswith("https://") for s in ready)
 
 

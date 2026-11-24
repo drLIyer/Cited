@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
@@ -62,6 +63,19 @@ def _post_hash(p) -> str:
     return hashlib.sha256(f"{p.title}\x00{p.date}\x00{p.text}".encode("utf-8", "replace")).hexdigest()[:24]
 
 
+_TRACKING = re.compile(r"^(utm_[a-z_]+|ref|ref_src|fbclid|gclid)$", re.I)
+
+
+def _clean_url(url: str) -> str:
+    """https, no tracking parameters or fragment, no trailing slash; a Substack
+    post link (…/p/slug) becomes its newsletter's home."""
+    parts = urlsplit(_fetcher.upgrade_to_https(url.strip()))
+    query = "&".join(kv for kv in parts.query.split("&")
+                     if kv and not _TRACKING.match(kv.split("=", 1)[0]))
+    path = re.sub(r"/p/[^/]*/?$", "", parts.path).rstrip("/")
+    return urlunsplit((parts.scheme, parts.netloc, path, query, ""))
+
+
 def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
     """Return (sources with URLs, entries still waiting for a URL)."""
     path = Path(os.getenv("CITED_LIBRARY_FILE") or path or DEFAULT_FILE)
@@ -75,8 +89,7 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
         if not url:
             pending.append({"name": entry.get("name", "?"), "note": entry.get("note", "")})
             continue
-        url = _fetcher.upgrade_to_https(url).rstrip("/")
-        url = re.sub(r"/p/[^?#]*$", "", url)          # a Substack post link → its newsletter
+        url = _clean_url(url)
         ready.append({"name": entry.get("name") or url, "url": url,
                       "key": _fetcher.parse_subdomain(url)})
     return ready, pending
