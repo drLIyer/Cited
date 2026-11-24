@@ -45,8 +45,8 @@ def test_load_sources(tmp_path, monkeypatch):
         {"name": "C", "url": "https://amivora.substack.com/p/the-full-catalogue"}]}))
     monkeypatch.setenv("CITED_LIBRARY_FILE", str(f))
     ready, pending = library.load_sources()
-    assert ready == [{"name": "A", "url": "https://news.example", "key": "news.example"},
-                     {"name": "C", "url": "https://amivora.substack.com", "key": "amivora"}]
+    assert ready == [{"name": "A", "url": "https://news.example", "key": "news.example", "aliases": []},
+                     {"name": "C", "url": "https://amivora.substack.com", "key": "amivora", "aliases": []}]
     assert pending == [{"name": "B", "note": "tbd"}]
 
 

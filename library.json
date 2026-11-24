@@ -1,16 +1,100 @@
 {
-  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed.",
+  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters.",
   "sources": [
-    {"name": "Lenny's Newsletter", "url": "https://www.lennysnewsletter.com"},
-    {"name": "Product Growth (Aakash Gupta)", "url": "https://www.news.aakashg.com"},
-    {"name": "Ami Vora", "url": "https://amivora.substack.com"},
-    {"name": "Deborah Liu", "url": "https://debliu.substack.com"},
-    {"name": "a16z", "url": null, "note": "Which a16z newsletter/feed? Not confirmed yet"},
-    {"name": "The Product Compass (Pawel Huryn)", "url": "https://www.productcompass.pm"},
-    {"name": "Product Talk (Teresa Torres)", "url": "https://www.producttalk.org"},
-    {"name": "The Skip (Nikhyl Singhal)", "url": "https://theskip.substack.com"},
-    {"name": "The Beautiful Mess (John Cutler)", "url": "https://cutlefish.substack.com"},
-    {"name": "SVPG (Marty Cagan)", "url": "https://www.svpg.com/articles/?utm_source=chatgpt.com"},
-    {"name": "Mind the Product", "url": "https://www.mindtheproduct.com/?utm_source=chatgpt.com"}
+    {
+      "name": "Lenny's Newsletter",
+      "url": "https://www.lennysnewsletter.com",
+      "aliases": [
+        "Lenny Rachitsky",
+        "Lenny",
+        "Lenny's"
+      ]
+    },
+    {
+      "name": "Product Growth (Aakash Gupta)",
+      "url": "https://www.news.aakashg.com",
+      "aliases": [
+        "Aakash Gupta",
+        "Aakash",
+        "Product Growth"
+      ]
+    },
+    {
+      "name": "Ami Vora",
+      "url": "https://amivora.substack.com",
+      "aliases": [
+        "Ami Vora"
+      ]
+    },
+    {
+      "name": "Deborah Liu",
+      "url": "https://debliu.substack.com",
+      "aliases": [
+        "Deborah Liu",
+        "Deb Liu"
+      ]
+    },
+    {
+      "name": "a16z",
+      "url": null,
+      "note": "Which a16z newsletter/feed? Not confirmed yet",
+      "aliases": [
+        "a16z",
+        "Andreessen Horowitz"
+      ]
+    },
+    {
+      "name": "The Product Compass (Pawel Huryn)",
+      "url": "https://www.productcompass.pm",
+      "aliases": [
+        "Pawel Huryn",
+        "Paweł Huryn",
+        "Product Compass"
+      ]
+    },
+    {
+      "name": "Product Talk (Teresa Torres)",
+      "url": "https://www.producttalk.org",
+      "aliases": [
+        "Teresa Torres",
+        "Product Talk"
+      ]
+    },
+    {
+      "name": "The Skip (Nikhyl Singhal)",
+      "url": "https://theskip.substack.com",
+      "aliases": [
+        "Nikhyl Singhal",
+        "Nikhyl",
+        "The Skip"
+      ]
+    },
+    {
+      "name": "The Beautiful Mess (John Cutler)",
+      "url": "https://cutlefish.substack.com",
+      "aliases": [
+        "John Cutler",
+        "Beautiful Mess",
+        "Cutlefish"
+      ]
+    },
+    {
+      "name": "SVPG (Marty Cagan)",
+      "url": "https://www.svpg.com/articles/?utm_source=chatgpt.com",
+      "aliases": [
+        "Marty Cagan",
+        "Cagan",
+        "SVPG",
+        "Silicon Valley Product Group"
+      ]
+    },
+    {
+      "name": "Mind the Product",
+      "url": "https://www.mindtheproduct.com/?utm_source=chatgpt.com",
+      "aliases": [
+        "Mind the Product",
+        "MTP"
+      ]
+    }
   ]
 }

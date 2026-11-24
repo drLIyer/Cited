@@ -181,6 +181,13 @@ def _top(scores, k: int) -> list[int]:
     return list(part[np.argsort(-scores[part], kind="stable")])
 
 
+def rerank_scores(query: str, texts: list[str]) -> list[float]:
+    """Cross-encoder relevance scores for (query, text) pairs."""
+    if not texts:
+        return []
+    return [float(s) for s in _rerank().predict([(query, t) for t in texts])]
+
+
 def search_index(query: str, chunks: list[Chunk], c_embs: np.ndarray, bm25,
                  top_k: int = 5) -> list[dict]:
     """Hybrid BM25 + vector search → RRF → cross-encoder rerank over a prepared index."""

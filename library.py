@@ -91,7 +91,8 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
             continue
         url = _clean_url(url)
         ready.append({"name": entry.get("name") or url, "url": url,
-                      "key": _fetcher.parse_subdomain(url)})
+                      "key": _fetcher.parse_subdomain(url),
+                      "aliases": [a for a in entry.get("aliases", []) if isinstance(a, str) and a.strip()]})
     return ready, pending
 
 
@@ -157,6 +158,113 @@ class Library:
     def search(self, key: str, query: str, top_k: int) -> tuple[list[dict], int]:
         idx = self._index[key]
         return _pipeline.search_index(query, idx.chunks, idx.embs, idx.bm25, top_k), idx.posts
+
+    # ── Routing: which newsletters should a question search? ─────────────────
+    def _names(self, key: str) -> list[str]:
+        src = self.sources[key]
+        base = re.sub(r"\s*\(.*?\)\s*", " ", src["name"]).strip()
+        return [n for n in dict.fromkeys([src["name"], base, *src.get("aliases", [])]) if n]
+
+    def match_name(self, text: str) -> Optional[str]:
+        """Library key for a name, alias, key or URL (case-insensitive)."""
+        t = (text or "").strip()
+        if not t:
+            return None
+        if "://" in t or "." in t:
+            key = self.resolve(t if "://" in t else f"https://{t}")
+            if key:
+                return key
+        low = t.lower()
+        for key in self.sources:
+            if low == key.lower() or any(low == n.lower() for n in self._names(key)):
+                return key
+        return None
+
+    def mentioned_in(self, question: str) -> list[str]:
+        """Library keys whose name/author/alias appears in the question (whole words)."""
+        found = []
+        for key in self.sources:
+            for name in self._names(key):
+                if re.search(rf"(?<![\w]){re.escape(name)}(?![\w])", question, re.I):
+                    found.append(key)
+                    break
+        return found
+
+    def route(self, question: str, requested: Optional[list[str]] = None) -> dict:
+        """Decide which library newsletters to search, and say why."""
+        ready = [k for k in self.sources if k in self._index]
+        not_found, not_ready, keys = [], [], []
+        if requested:
+            for item in requested:
+                key = self.match_name(str(item))
+                if key is None:
+                    not_found.append(str(item))
+                elif key not in self._index:
+                    not_ready.append(self.sources[key]["name"])
+                elif key not in keys:
+                    keys.append(key)
+            reason = "You asked for specific newsletters."
+        else:
+            mentioned = self.mentioned_in(question)
+            keys = [k for k in mentioned if k in self._index]
+            not_ready = [self.sources[k]["name"] for k in mentioned if k not in self._index]
+            if mentioned:
+                reason = "The question names " + ", ".join(self.sources[k]["name"] for k in mentioned) + "."
+            else:
+                keys = ready
+                reason = f"No newsletter named, so all {len(ready)} ready library newsletters were searched."
+        return {"keys": keys, "reason": reason, "not_found": not_found, "not_ready": not_ready}
+
+    def search_many(self, keys: list[str], query: str, top_k: int = 8,
+                    per_source: int = 12, pool: int = 40) -> tuple[list[dict], list[dict]]:
+        """Search several newsletters at once.
+
+        Each newsletter contributes its best candidates (BM25 + vector, fused);
+        one cross-encoder pass then ranks the combined pool. Returns
+        (hits with 'source'/'source_name', per-source coverage sorted best-first).
+        """
+        q_emb = _pipeline.embed_texts([query])[0]
+        q_tok = _pipeline._tokenize(query)
+        cands, coverage = [], []
+        for key in keys:
+            idx = self._index.get(key)
+            if idx is None or not idx.chunks:
+                continue
+            sims = idx.embs @ q_emb
+            vec = _pipeline._top(sims, per_source)
+            bm = _pipeline._top(idx.bm25.get_scores(q_tok), per_source)
+            rrf: dict[int, float] = {}
+            for lst in (vec, bm):
+                for rank, i in enumerate(lst):
+                    rrf[int(i)] = rrf.get(int(i), 0) + 1 / (_pipeline.RRF_K + rank + 1)
+            top = sorted(rrf, key=lambda i: rrf[i], reverse=True)[:per_source]
+            cands += [(key, i, float(sims[i])) for i in top]
+            best = sorted((float(sims[i]) for i in vec[:3]), reverse=True)
+            cov = _pipeline.coverage([{"similarity": s} for s in best])
+            coverage.append({"source": key, "name": self.sources[key]["name"], "level": cov["level"],
+                             "best_match_pct": cov["percent"], "posts": idx.posts})
+        cands.sort(key=lambda c: c[2], reverse=True)
+        cands = cands[:pool]
+        scores = _pipeline.rerank_scores(query, [self._index[k].chunks[i].text for k, i, _ in cands])
+        ranked = sorted(zip(cands, scores), key=lambda x: x[1], reverse=True)[:top_k]
+        hits = []
+        for (key, i, sim), score in ranked:
+            c = self._index[key].chunks[i]
+            hits.append({"title": c.title, "url": c.url, "date": c.date, "text": c.text,
+                         "score": float(score), "similarity": sim,
+                         "source": key, "source_name": self.sources[key]["name"]})
+        order = {"high": 0, "medium": 1, "low": 2}
+        coverage.sort(key=lambda c: (order[c["level"]], -c["best_match_pct"]))
+        return hits, coverage
+
+    def catalog(self) -> list[dict]:
+        """Library newsletters for users/Claude (name, URL, authors, size, state)."""
+        st = {s["key"]: s for s in self.status().get("sources", [])}
+        return [{"name": src["name"], "url": src["url"],
+                 "also_known_as": [a for a in src.get("aliases", []) if a != src["name"]],
+                 "free_posts": st.get(key, {}).get("posts", 0),
+                 "state": st.get(key, {}).get("state", "building")}
+                for key, src in self.sources.items()]
 
     def posts(self, key: str, limit: int = 300) -> list[dict]:
         db = self._conn()

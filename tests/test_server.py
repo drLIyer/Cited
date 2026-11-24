@@ -29,7 +29,7 @@ async def test_stdio_tools(server_factory):
 
 async def test_http_tools_hide_admin_by_default(server_factory):
     s = server_factory(CITED_TRANSPORT="http", CITED_ADMIN_TOKEN="s3cret")
-    assert await _tool_names(s) == {"search_newsletter", "list_posts"}
+    assert await _tool_names(s) == {"search_newsletter", "list_posts", "search_library", "list_library"}
 
 
 async def test_http_admin_tool_opt_in(server_factory):
@@ -133,7 +133,7 @@ async def test_health_lists_real_tools(server_factory):
     async with _client(s.build_http_app()) as c:
         r = await c.get("/health")
     assert r.status_code == 200
-    assert sorted(r.json()["tools"]) == ["list_posts", "search_newsletter"]
+    assert sorted(r.json()["tools"]) == ["list_library", "list_posts", "search_library", "search_newsletter"]
 
 
 async def test_admin_route(server_factory):

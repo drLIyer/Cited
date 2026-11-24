@@ -47,6 +47,8 @@ Every result carries a confidence rating — **High**, **Moderate**, or **Limite
 |---|---|---|---|
 | `search_newsletter` | Search a newsletter or podcast | readOnlyHint, idempotentHint, openWorldHint | Searches a source's public posts for a question; returns ranked excerpts with title, date, link, per-excerpt match %, and a confidence rating (plus a disclaimer when coverage is limited). |
 | `list_posts` | List a newsletter's posts | readOnlyHint, idempotentHint, openWorldHint | Lists the public posts/episodes Cited can see, with dates and links. |
+| `search_library` | Search the Cited library | readOnlyHint, idempotentHint, openWorldHint | Searches Cited's pre-indexed library of product newsletters (full archives of free posts) at once — routed by the writers named in the question, or across all of them — and reports which newsletters cover the topic best. |
+| `list_library` | List the Cited library | readOnlyHint, idempotentHint | Lists the newsletters in the library with URLs, authors and indexed post counts. |
 
 ## Example prompts
 
@@ -54,6 +56,8 @@ Every result carries a confidence rating — **High**, **Moderate**, or **Limite
 2. Search https://news.aakashg.com for advice on PM interviews and give me the top 3 ideas with links.
 3. Find the podcast RSS feed for Acquired, then tell me which episodes discuss Costco.
 4. List the posts from https://stratechery.com/feed and summarise the themes from the last month.
+5. How do the best product leaders run discovery? Compare what Marty Cagan and Teresa Torres say.
+6. Which product newsletters have written the most about pricing, and what do they recommend?
 
 ## Use cases (for the directory's "Use cases" step)
 

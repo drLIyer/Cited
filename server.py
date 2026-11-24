@@ -120,8 +120,17 @@ _LIBRARY = _library_mod.Library(
     max_chars=int(os.getenv("CITED_LIBRARY_POST_CHARS", "60000")),
 )
 _LIBRARY_NOTE = (
+    "## The Cited library\n"
     "Full archives of free posts are pre-indexed (fast, complete) for: "
     + ", ".join(f"{s['name']} ({s['url']})" for s in _lib_sources) + ".\n\n"
+    "## Choosing a tool\n"
+    "- A question about a topic without a specific source (e.g. 'how do teams run product "
+    "discovery?'), or one that names library writers or newsletters (e.g. 'what does Marty "
+    "Cagan say about…', 'compare Lenny and Teresa Torres on…') → call search_library. Pass "
+    "`newsletters` to restrict it; otherwise it routes by the names in the question, or searches "
+    "the whole library. It reports which newsletters cover the topic best — tell the user.\n"
+    "- A specific newsletter or feed URL that is not in the library → call search_newsletter.\n"
+    "- 'Which newsletters can you search?' → call list_library.\n\n"
 ) if _LIBRARY.enabled and _lib_sources else ""
 
 mcp = MCPServer(
@@ -387,6 +396,101 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
     except Exception as exc:
         log.exception("search_newsletter failed (url=%s)", url)
         return json.dumps({"error": f"Unexpected error: {exc}"})
+
+
+# ── Library tools (hosted mode with a library) ─────────────────────────────────
+
+if _LIBRARY.enabled and _lib_sources:
+
+    @mcp.tool(title="Search the Cited library",
+              annotations=_read_only("Search the Cited library"))
+    async def search_library(question: str, newsletters: Optional[list[str]] = None,
+                             top_k: int = 8, ctx: Optional[Context] = None) -> str:
+        """
+        Search Cited's library of pre-indexed newsletters (full archives of free posts)
+        — several at once — and get the best passages across them, each labelled with
+        its newsletter, plus how well each newsletter covers the question.
+
+        Routing: if `newsletters` is given, only those are searched (names, authors or
+        URLs, e.g. ["Marty Cagan", "Product Talk"]). Otherwise, newsletters or writers
+        named in the question are searched; if none are named, the whole library is.
+        Call list_library to see what's included.
+
+        Args:
+            question:    The question or search query
+            newsletters: Optional names, authors or URLs to restrict the search to
+            top_k:       Number of passages to return (default 8, max 15)
+        """
+        limited = _rate_limit_error(ctx)
+        if limited:
+            return json.dumps({"error": limited, "rate_limited": True})
+        try:
+            top_k = max(1, min(int(top_k), 15))
+        except (TypeError, ValueError):
+            top_k = 8
+        if isinstance(newsletters, str):
+            newsletters = [newsletters]
+        try:
+            route = _LIBRARY.route(question, newsletters)
+            if not route["keys"]:
+                problem = ("None of the requested newsletters are in the library: "
+                           + ", ".join(route["not_found"]) + "." if route["not_found"] and not route["not_ready"]
+                           else "The library is still being built — try again in a few minutes, or use "
+                                "search_newsletter with the newsletter's URL.")
+                return json.dumps({"error": problem, "routing": route | {"keys": []},
+                                   "library": [c["name"] for c in _LIBRARY.catalog()]})
+
+            hits, per_source = await asyncio.to_thread(_LIBRARY.search_many, route["keys"], question, top_k)
+            cov = _pipeline.coverage(hits)
+            _recent_levels.append(cov["level"])
+            names = [_LIBRARY.sources[k]["name"] for k in route["keys"]]
+            strong = [c["name"] for c in per_source if c["level"] in ("high", "medium")]
+            result: dict = {
+                "routing": {
+                    "searched": names,
+                    "reason": route["reason"],
+                    "best_coverage": strong[:3] or None,
+                    **({"not_in_library": route["not_found"]} if route["not_found"] else {}),
+                    **({"still_building": route["not_ready"]} if route["not_ready"] else {}),
+                },
+                "confidence": _confidence_payload(cov),
+                "low_confidence": cov["level"] == "low",
+                "coverage_by_newsletter": [
+                    {"newsletter": c["name"], "coverage": {"high": "High", "medium": "Moderate",
+                                                           "low": "Limited"}[c["level"]],
+                     "best_match_pct": c["best_match_pct"], "free_posts": c["posts"]}
+                    for c in per_source],
+                "results": [
+                    {"rank": i + 1, "newsletter": h["source_name"], "title": h["title"],
+                     "date": h["date"], "url": h["url"],
+                     "match_pct": max(0, min(100, round(h["similarity"] * 100))),
+                     "excerpt": h["text"]}
+                    for i, h in enumerate(hits)],
+            }
+            if cov["level"] == "low":
+                who = names[0] if len(names) == 1 else "The Cited library"
+                result["disclaimer"] = _low_coverage_disclaimer(who, cov)
+                result["instructions_for_assistant"] = (
+                    "Show `disclaimer` to the user verbatim at the top of your answer. Clearly "
+                    "separate anything from general knowledge or web search from what the excerpts "
+                    "below actually say, and cite the excerpts you use.")
+            top_excerpt = hits[0]["text"] if hits else ""
+            await _save_history("library://" + "+".join(route["keys"])[:400], question, top_excerpt,
+                                result["results"], cov, "search")
+            return json.dumps(result, indent=2)
+        except Exception as exc:
+            log.exception("search_library failed")
+            return json.dumps({"error": f"Unexpected error: {exc}"})
+
+    @mcp.tool(title="List the Cited library",
+              annotations=_read_only("List the Cited library", open_world=False))
+    async def list_library() -> str:
+        """
+        List the newsletters in Cited's library — the ones with full archives pre-indexed
+        that search_library can search — with their URLs, authors and how many free posts
+        are indexed.
+        """
+        return json.dumps({"newsletters": await asyncio.to_thread(_LIBRARY.catalog)}, indent=2)
 
 
 # ── Tool 2: list_posts ─────────────────────────────────────────────────────────
