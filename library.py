@@ -30,6 +30,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -75,6 +76,7 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
             pending.append({"name": entry.get("name", "?"), "note": entry.get("note", "")})
             continue
         url = _fetcher.upgrade_to_https(url).rstrip("/")
+        url = re.sub(r"/p/[^?#]*$", "", url)          # a Substack post link → its newsletter
         ready.append({"name": entry.get("name") or url, "url": url,
                       "key": _fetcher.parse_subdomain(url)})
     return ready, pending

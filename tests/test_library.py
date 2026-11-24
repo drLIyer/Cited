@@ -41,10 +41,12 @@ def serve(mock_http, pages):
 def test_load_sources(tmp_path, monkeypatch):
     f = tmp_path / "lib.json"
     f.write_text(json.dumps({"sources": [
-        {"name": "A", "url": "http://news.example/"}, {"name": "B", "url": None, "note": "tbd"}]}))
+        {"name": "A", "url": "http://news.example/"}, {"name": "B", "url": None, "note": "tbd"},
+        {"name": "C", "url": "https://amivora.substack.com/p/the-full-catalogue"}]}))
     monkeypatch.setenv("CITED_LIBRARY_FILE", str(f))
     ready, pending = library.load_sources()
-    assert ready == [{"name": "A", "url": "https://news.example", "key": "news.example"}]
+    assert ready == [{"name": "A", "url": "https://news.example", "key": "news.example"},
+                     {"name": "C", "url": "https://amivora.substack.com", "key": "amivora"}]
     assert pending == [{"name": "B", "note": "tbd"}]
 
 
@@ -52,6 +54,7 @@ def test_repo_library_json_is_valid():
     ready, pending = library.load_sources(library.DEFAULT_FILE)
     names = [s["name"] for s in ready] + [p["name"] for p in pending]
     assert "Lenny's Newsletter" in names and len(names) == 8
+    assert {s["name"]: s["url"] for s in ready}["Deborah Liu"] == "https://debliu.substack.com"
     assert all(s["url"].startswith("https://") for s in ready)
 
 

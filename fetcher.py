@@ -421,9 +421,9 @@ async def _fetch_substack(key: str, max_posts: Optional[int] = None,
                         f"'{key}' doesn't appear to be a Substack newsletter "
                         "(API returned 404). Try the .substack.com URL directly."
                     ) from exc
-                raise FetchError(
-                    f"Substack API {exc.response.status_code} for '{key}'"
-                ) from exc
+                err = FetchError(f"Substack API {exc.response.status_code} for '{key}'")
+                err.status = exc.response.status_code
+                raise err from exc
             except httpx.RequestError as exc:
                 raise FetchError(f"Network error: {exc}") from exc
 
@@ -658,6 +658,107 @@ async def _fetch_rss(url: str, max_posts: Optional[int] = None,
     return posts
 
 
+# ── Feed discovery (non-Substack sites) & paged feeds ─────────────────────────
+
+_LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.I)
+_ATTR_RE     = re.compile(r"""([a-zA-Z:-]+)\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""")
+_FEED_TYPES  = ("application/rss+xml", "application/atom+xml", "application/feed+xml")
+_FEED_GUESSES = ("/feed/", "/feed", "/rss", "/rss.xml", "/feed.xml", "/atom.xml", "/index.xml")
+_FEED_FOR: dict[str, str] = {}          # site key → discovered feed URL
+MAX_FEED_PAGES = 200
+
+
+def _attrs(tag: str) -> dict[str, str]:
+    return {m.group(1).lower(): (m.group(3) or m.group(4) or m.group(5) or "")
+            for m in _ATTR_RE.finditer(tag)}
+
+
+def _looks_like_feed(content: bytes) -> bool:
+    head = content.lstrip()[:600].lower()
+    return b"<rss" in head or b"<feed" in head or (head.startswith(b"<?xml") and b"<html" not in head)
+
+
+async def discover_feed(url: str) -> Optional[str]:
+    """Find a site's RSS/Atom feed: <link rel="alternate"> on the page, then common paths."""
+    url = upgrade_to_https(url)
+    key = parse_subdomain(url)
+    if key in _FEED_FOR:
+        return _FEED_FOR[key]
+    parts = urlsplit(url)
+    root = f"{parts.scheme}://{parts.netloc}"
+    async with _client() as client:
+        for page in dict.fromkeys([url, root + "/"]):
+            try:
+                resp = await _get(client, page)
+            except (httpx.HTTPError, FetchError):
+                continue
+            text = resp.content[:300_000].decode("utf-8", "replace")
+            for tag in _LINK_TAG_RE.findall(text):
+                a = _attrs(tag)
+                if "alternate" in a.get("rel", "").lower().split() and \
+                        a.get("type", "").lower() in _FEED_TYPES and a.get("href"):
+                    feed = upgrade_to_https(urljoin(page, a["href"]))
+                    if "comments" in feed.lower():
+                        continue          # WordPress also advertises a comments feed
+                    _FEED_FOR[key] = feed
+                    return feed
+        for path in _FEED_GUESSES:
+            try:
+                resp = await _get(client, root + path)
+            except (httpx.HTTPError, FetchError):
+                continue
+            if _looks_like_feed(resp.content):
+                _FEED_FOR[key] = root + path
+                return root + path
+    return None
+
+
+def _should_try_feed(url: str, exc: Exception) -> bool:
+    """After a failed Substack attempt: is this site plausibly not Substack at all?"""
+    if _host_is(url, "substack.com"):
+        return False                                   # real Substack: keep the real error
+    if isinstance(exc, (UnsafeURLError, UnsafeContentError, SourcePausedError)):
+        return False
+    if isinstance(exc, NotSubstackError):
+        return True                                    # 404 or non-JSON from the Substack API
+    return getattr(exc, "status", None) in (401, 403, 405)   # API refused; site may still have a feed
+
+
+def _with_page(feed_url: str, n: int) -> str:
+    parts = urlsplit(feed_url)
+    q = [kv for kv in parts.query.split("&") if kv and not kv.startswith("paged=")]
+    q.append(f"paged={n}")
+    return parts._replace(query="&".join(q)).geturl()
+
+
+async def _fetch_feed_archive(feed_url: str, max_chars: int,
+                              stop: Optional[Callable[[list[Post]], bool]] = None) -> list[Post]:
+    """Fetch a feed, then older pages WordPress-style (?paged=2, 3, …) when the site supports it.
+
+    Stops at the first page that errors, is empty, repeats posts already seen
+    (the site ignores ?paged), or — for incremental refreshes — when `stop(page)`
+    says everything on it is already known.
+    """
+    posts = await _fetch_rss(feed_url, max_posts=0, max_chars=max_chars)
+    seen = {p.url for p in posts}
+    if len(posts) < 5 or (stop is not None and stop(posts)):
+        return posts
+    for n in range(2, MAX_FEED_PAGES + 1):
+        try:
+            page = await _fetch_rss(_with_page(feed_url, n), max_posts=0, max_chars=max_chars)
+        except (FetchError, NotSubstackError):
+            break
+        new = [p for p in page if p.url not in seen]
+        if not new:
+            break
+        posts.extend(new)
+        seen.update(p.url for p in new)
+        if stop is not None and stop(new):
+            break
+    log.info("Fetched %d posts from %s (feed archive)", len(posts), feed_url)
+    return posts
+
+
 # ── Public API ─────────────────────────────────────────────────────────────────
 
 async def get_posts(url: str) -> list[Post]:
@@ -685,7 +786,15 @@ async def get_posts(url: str) -> list[Post]:
     elif source == "rss":
         posts = await _fetch_rss(url)
     else:
-        posts = await _fetch_substack(key)
+        try:
+            posts = await _fetch_substack(key)
+        except (NotSubstackError, FetchError) as exc:
+            if not _should_try_feed(url, exc):
+                raise
+            feed = await discover_feed(url)          # not Substack → try the site's RSS/Atom feed
+            if not feed:
+                raise
+            posts = await _fetch_rss(feed)
 
     _CACHE[key] = (posts, time.time())
     return posts
@@ -696,7 +805,9 @@ async def fetch_archive(url: str, *, max_chars: int, free_only: bool = True,
     """Fetch as much of a source as it exposes (used by the library; no cache).
 
     Substack: every public post (paged, newest first; `stop` can end early).
-    Medium / RSS / podcast feeds: everything the feed currently lists.
+    Other sites: their RSS/Atom feed (discovered automatically), paged back
+    WordPress-style (?paged=N) when the site supports it.
+    Medium: everything its feed currently lists.
     """
     url = upgrade_to_https(url)
     source = _detect_source(url)
@@ -704,9 +815,19 @@ async def fetch_archive(url: str, *, max_chars: int, free_only: bool = True,
     if source == "medium":
         return await _fetch_medium(url, max_posts=0, max_chars=max_chars)
     if source == "rss":
-        return await _fetch_rss(url, max_posts=0, max_chars=max_chars)
-    return await _fetch_substack(parse_subdomain(url), max_posts=0, max_chars=max_chars,
-                                 free_only=free_only, stop=stop)
+        return await _fetch_feed_archive(url, max_chars, stop)
+    try:
+        return await _fetch_substack(parse_subdomain(url), max_posts=0, max_chars=max_chars,
+                                     free_only=free_only, stop=stop)
+    except (NotSubstackError, FetchError) as exc:
+        if not _should_try_feed(url, exc):
+            raise
+        feed = await discover_feed(url)
+        if not feed:
+            raise NotSubstackError(
+                f"{url} isn't a Substack and no RSS/Atom feed was found on it. "
+                "Put the site's feed URL in library.json instead.") from exc
+        return await _fetch_feed_archive(feed, max_chars, stop)
 
 
 def invalidate(url: str) -> None:

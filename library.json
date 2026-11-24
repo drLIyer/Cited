@@ -3,11 +3,11 @@
   "sources": [
     {"name": "Lenny's Newsletter", "url": "https://www.lennysnewsletter.com"},
     {"name": "Product Growth (Aakash Gupta)", "url": "https://www.news.aakashg.com"},
-    {"name": "Ami Vora", "url": null, "note": "Newsletter URL not confirmed yet"},
-    {"name": "Deborah Liu", "url": null, "note": "Newsletter URL not confirmed yet"},
+    {"name": "Ami Vora", "url": "https://amivora.substack.com"},
+    {"name": "Deborah Liu", "url": "https://debliu.substack.com"},
     {"name": "a16z", "url": null, "note": "Which a16z newsletter/feed? Not confirmed yet"},
     {"name": "The Product Compass (Pawel Huryn)", "url": "https://www.productcompass.pm"},
-    {"name": "Product Talk (Teresa Torres)", "url": null, "note": "Feed URL not confirmed yet"},
+    {"name": "Product Talk (Teresa Torres)", "url": "https://www.producttalk.org"},
     {"name": "Nikhyl Singhal", "url": null, "note": "Newsletter URL not confirmed yet"}
   ]
 }

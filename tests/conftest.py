@@ -87,6 +87,7 @@ def fake_dns(monkeypatch):
 
     monkeypatch.setattr(fetcher, "_resolve", _resolve)
     fetcher._CACHE.clear()
+    fetcher._FEED_FOR.clear()
     yield
 
 
