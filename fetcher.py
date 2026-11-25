@@ -79,6 +79,32 @@ class UnsafeContentError(FetchError):
     """The source returned content we refuse to process (XML attack, oversized body)."""
 
 
+class OptedOutError(NotSubstackError):
+    """The writer has opted out of AI tools (robots.txt, noai, TDM reservation)."""
+
+
+# Hosts whose writers gave Cited explicit permission (set by the library).
+PERMITTED_HOSTS: set[str] = set()
+
+
+async def _respect_optout(url: str, feed_path: Optional[str] = None) -> None:
+    """Raise OptedOutError if the site has opted out of AI use."""
+    import optout
+    if not optout.enabled():
+        return
+    host = _host(url)
+    if host in PERMITTED_HOSTS or (host.startswith("www.") and host[4:] in PERMITTED_HOSTS):
+        return
+    try:
+        decision = await optout.check(url, feed_path)
+    except optout.OptOutCheckError as exc:
+        raise FetchError(f"Couldn't check {host}'s AI opt-out preferences: {exc}") from exc
+    if not decision.allowed:
+        raise OptedOutError(
+            f"The writer of {host} has opted out of AI tools ({decision.reason}) — Cited respects "
+            "that and doesn't fetch or index it. Please read it directly on their site.")
+
+
 class SourcePausedError(FetchError):
     """Fetching from this host is paused for a while after repeated failures."""
 
@@ -769,6 +795,7 @@ async def get_posts(url: str) -> list[Post]:
     await _check_url(url)          # reject unsafe URLs before touching the cache
 
     host = _host(url)
+    await _respect_optout(url)
     until = paused_hosts().get(host)
     if until:
         mins = max(1, round((until - time.time()) / 60))
@@ -801,7 +828,8 @@ async def get_posts(url: str) -> list[Post]:
 
 
 async def fetch_archive(url: str, *, max_chars: int, free_only: bool = True,
-                        stop: Optional[Callable[[list[Post]], bool]] = None) -> list[Post]:
+                        stop: Optional[Callable[[list[Post]], bool]] = None,
+                        check_optout: bool = True) -> list[Post]:
     """Fetch as much of a source as it exposes (used by the library; no cache).
 
     Substack: every public post (paged, newest first; `stop` can end early).
@@ -812,6 +840,8 @@ async def fetch_archive(url: str, *, max_chars: int, free_only: bool = True,
     url = upgrade_to_https(url)
     source = _detect_source(url)
     await _check_url(url)
+    if check_optout:
+        await _respect_optout(url)
     if source == "medium":
         return await _fetch_medium(url, max_posts=0, max_chars=max_chars)
     if source == "rss":

@@ -92,7 +92,9 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
         url = _clean_url(url)
         ready.append({"name": entry.get("name") or url, "url": url,
                       "key": _fetcher.parse_subdomain(url),
-                      "aliases": [a for a in entry.get("aliases", []) if isinstance(a, str) and a.strip()]})
+                      "aliases": [a for a in entry.get("aliases", []) if isinstance(a, str) and a.strip()],
+                      # "granted": the writer gave Cited explicit permission → skip the AI opt-out check
+                      "permission": str(entry.get("permission") or "").lower() == "granted"})
     return ready, pending
 
 
@@ -109,6 +111,11 @@ class Library:
         self._lock     = threading.Lock()
         self._refreshing: set[str] = set()
         self._errors: dict[str, str] = {}
+        self._optout: dict[str, str] = {}      # key → reason the writer's site opted out of AI
+        for s in self.sources.values():
+            if s.get("permission"):
+                host = (urlsplit(s["url"]).hostname or "").lower()
+                _fetcher.PERMITTED_HOSTS.add(host)
 
     # ── Storage ───────────────────────────────────────────────────────────────
     def _conn(self) -> sqlite3.Connection:
@@ -193,12 +200,14 @@ class Library:
     def route(self, question: str, requested: Optional[list[str]] = None) -> dict:
         """Decide which library newsletters to search, and say why."""
         ready = [k for k in self.sources if k in self._index]
-        not_found, not_ready, keys = [], [], []
+        not_found, not_ready, keys, opted_out = [], [], [], []
         if requested:
             for item in requested:
                 key = self.match_name(str(item))
                 if key is None:
                     not_found.append(str(item))
+                elif key in self._optout:
+                    opted_out.append(self.sources[key]["name"])
                 elif key not in self._index:
                     not_ready.append(self.sources[key]["name"])
                 elif key not in keys:
@@ -207,13 +216,16 @@ class Library:
         else:
             mentioned = self.mentioned_in(question)
             keys = [k for k in mentioned if k in self._index]
-            not_ready = [self.sources[k]["name"] for k in mentioned if k not in self._index]
+            opted_out = [self.sources[k]["name"] for k in mentioned if k in self._optout]
+            not_ready = [self.sources[k]["name"] for k in mentioned
+                         if k not in self._index and k not in self._optout]
             if mentioned:
                 reason = "The question names " + ", ".join(self.sources[k]["name"] for k in mentioned) + "."
             else:
                 keys = ready
                 reason = f"No newsletter named, so all {len(ready)} ready library newsletters were searched."
-        return {"keys": keys, "reason": reason, "not_found": not_found, "not_ready": not_ready}
+        return {"keys": keys, "reason": reason, "not_found": not_found, "not_ready": not_ready,
+                "opted_out": opted_out}
 
     def search_many(self, keys: list[str], query: str, top_k: int = 8,
                     per_source: int = 12, pool: int = 40) -> tuple[list[dict], list[dict]]:
@@ -329,8 +341,21 @@ class Library:
             def stop(page) -> bool:
                 return (not full) and bool(page) and all(known.get(p.url) == _post_hash(p) for p in page)
 
+            # Respect the writer's AI opt-out (robots.txt, noai, TDM reservation)
+            # before fetching anything — and delete what we hold if they opted out.
+            import optout
+            if optout.enabled() and not src.get("permission"):
+                decision = await optout.check(src["url"])
+                if not decision.allowed:
+                    await asyncio.to_thread(self._purge, key)
+                    self._optout[key] = decision.reason
+                    self._errors.pop(key, None)
+                    log.info("Library: %s opted out of AI (%s) — not indexed", key, decision.reason)
+                    return {"key": key, "opted_out": decision.reason}
+            self._optout.pop(key, None)
+
             posts = await _fetcher.fetch_archive(src["url"], max_chars=self.max_chars,
-                                                 free_only=True, stop=stop)
+                                                 free_only=True, stop=stop, check_optout=False)
             changed = [p for p in posts if known.get(p.url) != _post_hash(p)]
             fetched_urls = {p.url for p in posts}
             removed = (set(known) - fetched_urls) if (full and _fetcher._detect_source(src["url"]) == "substack") else set()
@@ -348,6 +373,19 @@ class Library:
             return {"key": key, "error": self._errors[key]}
         finally:
             self._refreshing.discard(key)
+
+    def _purge(self, key: str) -> None:
+        """Delete everything stored for a source and drop its in-memory index."""
+        db = self._conn()
+        try:
+            db.execute("DELETE FROM lib_chunks WHERE key = ?", (key,))
+            db.execute("DELETE FROM lib_posts WHERE key = ?", (key,))
+            db.execute("UPDATE lib_sources SET posts = 0, chunks = 0, last_error = NULL WHERE key = ?", (key,))
+            db.commit()
+        finally:
+            db.close()
+        with self._lock:
+            self._index.pop(key, None)
 
     def _known_hashes(self, key: str) -> dict[str, str]:
         db = self._conn()
@@ -437,6 +475,7 @@ class Library:
             idx = self._index.get(key)
             failed = bool(self._errors.get(key) or r.get("last_error"))
             state = ("refreshing" if key in self._refreshing else
+                     "opted_out" if key in self._optout else   # writer opted out of AI: not indexed
                      "stale" if failed and idx else      # still searchable; last refresh failed
                      "error" if failed else
                      "ready" if idx else "building")
@@ -446,5 +485,7 @@ class Library:
                         "chunks": r.get("chunks") or (len(idx.chunks) if idx else 0),
                         "last_refresh": r.get("last_refresh"), "last_ok": r.get("last_ok"),
                         "last_full": r.get("last_full"), "last_added": r.get("last_added") or 0,
-                        "error": self._errors.get(key) or r.get("last_error")})
+                        "error": None if key in self._optout else (self._errors.get(key) or r.get("last_error")),
+                        "opt_out_reason": self._optout.get(key),
+                        "permission": bool(src.get("permission"))})
         return {"enabled": True, "sources": out, "pending": self.pending}

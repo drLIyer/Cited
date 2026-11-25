@@ -259,6 +259,8 @@ def _tool_problem(tool: str, url: str, exc: Exception, ip: Optional[str] = None)
         kind, level = "blocked_content", "WARNING"
     elif isinstance(exc, _fetcher.SourcePausedError):
         kind, level = "source_paused", "INFO"
+    elif isinstance(exc, _fetcher.OptedOutError):
+        kind, level = "opted_out", "INFO"
     elif isinstance(exc, _fetcher.NotSubstackError):
         kind, level = "invalid_source", "INFO"
     else:
@@ -433,10 +435,15 @@ if _LIBRARY.enabled and _lib_sources:
         try:
             route = _LIBRARY.route(question, newsletters)
             if not route["keys"]:
-                problem = ("None of the requested newsletters are in the library: "
-                           + ", ".join(route["not_found"]) + "." if route["not_found"] and not route["not_ready"]
-                           else "The library is still being built — try again in a few minutes, or use "
-                                "search_newsletter with the newsletter's URL.")
+                if route.get("opted_out") and not route["not_ready"]:
+                    problem = (", ".join(route["opted_out"]) + " opted out of AI tools, so Cited doesn't "
+                               "index them. Please read them directly on their sites.")
+                elif route["not_found"] and not route["not_ready"]:
+                    problem = ("None of the requested newsletters are in the library: "
+                               + ", ".join(route["not_found"]) + ".")
+                else:
+                    problem = ("The library is still being built — try again in a few minutes, or use "
+                               "search_newsletter with the newsletter's URL.")
                 return json.dumps({"error": problem, "routing": route | {"keys": []},
                                    "library": [c["name"] for c in _LIBRARY.catalog()]})
 
@@ -452,6 +459,7 @@ if _LIBRARY.enabled and _lib_sources:
                     "best_coverage": strong[:3] or None,
                     **({"not_in_library": route["not_found"]} if route["not_found"] else {}),
                     **({"still_building": route["not_ready"]} if route["not_ready"] else {}),
+                    **({"opted_out_of_ai": route["opted_out"]} if route.get("opted_out") else {}),
                 },
                 "confidence": _confidence_payload(cov),
                 "low_confidence": cov["level"] == "low",

@@ -1,5 +1,5 @@
 {
-  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters.",
+  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters. Sites whose writers opted out of AI (robots.txt, noai, TDM reservation) are skipped automatically; add \"permission\": \"granted\" only if the writer has given you permission directly.",
   "sources": [
     {
       "name": "Lenny's Newsletter",

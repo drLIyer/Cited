@@ -72,6 +72,7 @@ Every result carries a confidence rating — **High**, **Moderate**, or **Limite
 - Stores: if the operator enables logging, the URL, question, top excerpt, and timestamp for up to 90 days; an error log (no questions, no IPs) for up to 30 days.
 - IP addresses: never stored; held in memory only to temporarily block abusive clients.
 - No data is sold or shared. Outbound requests go only to the newsletter/feed host.
+- Writers' AI opt-outs are respected: sites that block AI crawlers in robots.txt, use `noai` tags, or reserve text & data mining rights are never fetched or indexed.
 
 ## Screenshots to upload
 

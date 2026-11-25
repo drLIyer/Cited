@@ -65,6 +65,7 @@ KINDS = {
     "admin_auth_failed":  ("security", "Failed admin sign-in",       "Someone used a wrong admin token."),
     "admin_lockout":      ("security", "Admin brute-force lockout",  "Too many wrong admin tokens; admin access was locked temporarily."),
     "blocked_ip":         ("security", "Blocked client",             "A client temporarily blocked by the auto-fix agent tried again."),
+    "opted_out":          ("usage",    "Writer opted out of AI",     "A request for a site whose writer opted out of AI tools was declined."),
     "source_paused":      ("usage",    "Feed temporarily paused",    "A request hit a feed the auto-fix agent paused after repeated failures."),
     "auto_fix":           ("autofix",  "Auto-fix applied",           "The auto-fix agent applied a safe fix."),
     "auto_fix_failed":    ("autofix",  "Auto-fix didn't work",       "A fix was applied but the problem continued (or the fix itself failed)."),

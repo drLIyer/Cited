@@ -102,7 +102,7 @@ function renderOverview(o) {
 }
 
 const LIB_STATE = { ready: "Ready", building: "Building…", refreshing: "Refreshing…", error: "Error",
-                    stale: "Stale — last refresh failed" };
+                    stale: "Stale — last refresh failed", opted_out: "Opted out of AI" };
 
 function renderLibrary(lib) {
   const panel = document.getElementById("library-panel");
@@ -119,7 +119,10 @@ function renderLibrary(lib) {
     });
     return el("tr", {},
       el("td", {}, el("b", {}, s.name), el("div", { class: "muted" }, s.url),
-        s.error ? el("div", { style: "color:var(--bad);font-size:13px" }, s.error) : null),
+        s.error ? el("div", { style: "color:var(--bad);font-size:13px" }, s.error) : null,
+        s.opt_out_reason ? el("div", { class: "muted", style: "font-size:13px" },
+          `${s.opt_out_reason} Not indexed; stored posts deleted. If the writer gives you permission, set "permission": "granted" in library.json.`) : null,
+        s.permission ? el("div", { class: "muted", style: "font-size:13px" }, "✓ Writer permission on file") : null),
       el("td", {}, pill(s.state, LIB_STATE[s.state] || s.state)),
       el("td", { class: "num" }, s.posts), el("td", { class: "num" }, s.chunks),
       el("td", {}, s.last_ok ? when(s.last_ok) : "never"),

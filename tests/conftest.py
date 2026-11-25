@@ -88,6 +88,12 @@ def fake_dns(monkeypatch):
     monkeypatch.setattr(fetcher, "_resolve", _resolve)
     fetcher._CACHE.clear()
     fetcher._FEED_FOR.clear()
+    fetcher.PERMITTED_HOSTS.clear()
+    import optout
+    optout.clear_cache()
+    # The AI opt-out check is exercised in test_optout.py; elsewhere it's off so
+    # request-sequence assertions only see the requests under test.
+    monkeypatch.setenv("CITED_RESPECT_AI_OPTOUT", "0")
     yield
 
 

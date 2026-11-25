@@ -353,7 +353,8 @@ class HealthChecker:
         ready = sum(1 for s in srcs if s["state"] in ("ready", "refreshing", "stale"))
         failing = [s["name"] for s in srcs if s["state"] in ("error", "stale")]
         out = {"status": OK, "sources": len(srcs), "ready": ready,
-               "posts": sum(s["posts"] for s in srcs), "needs_url": len(st.get("pending", []))}
+               "posts": sum(s["posts"] for s in srcs), "needs_url": len(st.get("pending", [])),
+               "opted_out": sum(1 for s in srcs if s["state"] == "opted_out")}
         if failing:
             out.update(status=WARN, detail="Refresh failing for: " + ", ".join(failing))
         return out
