@@ -37,6 +37,7 @@ Give Claude a Substack (including custom domains), Medium publication, or any RS
 Every result carries a confidence rating — **High**, **Moderate**, or **Limited coverage** — based on how closely the source matches the question. When coverage is Limited, Claude tells the user plainly that the source barely covers the topic and that the answer draws on general AI knowledge.
 
 - Searches up to the 200 most recent public posts of a Substack; RSS and podcast feeds include whatever the feed lists.
+- A built-in library of top product newsletters and podcast transcripts (e.g. all 166 episodes of The Growth Podcast with Aakash Gupta) — podcast quotes link to the exact moment in the episode.
 - Works with podcasts via their RSS feed (show notes and episode summaries).
 - Read-only: Cited never changes anything. Paywalled posts are not included.
 - Free, no account needed. Fair-use limit of 15 searches per minute.

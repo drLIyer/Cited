@@ -32,7 +32,7 @@ import re
 import socket
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import urljoin, urlsplit
 
@@ -139,6 +139,7 @@ class Post:
     date: str
     text: str
     audience: str = ""      # Substack: everyone / only_paid / founding / only_free
+    meta: dict = field(default_factory=dict)   # source-specific extras (e.g. transcripts)
 
 
 _PAID_AUDIENCES = {"only_paid", "founding"}
@@ -270,7 +271,11 @@ async def _get(client: httpx.AsyncClient, url: str,
                 buf += chunk
                 if len(buf) > MAX_FETCH_BYTES:
                     raise UnsafeContentError(f"Response from {url} is too large.")
-            return httpx.Response(resp.status_code, headers=resp.headers,
+            # aiter_bytes() already decoded any gzip/br/deflate body, so drop the
+            # encoding headers — otherwise the rebuilt Response would decode it again.
+            headers = [(k, v) for k, v in resp.headers.multi_items()
+                       if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")]
+            return httpx.Response(resp.status_code, headers=headers,
                                   content=bytes(buf), request=resp.request)
     raise FetchError(f"Too many redirects fetching {url}")
 

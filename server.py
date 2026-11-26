@@ -167,6 +167,11 @@ mcp = MCPServer(
 
         "## Composing answers\n"
         "Always cite the article or episode title and link for every claim. "
+        "If a result includes `attribution`, show it with the quote (e.g. 'From The Growth Podcast "
+        "with Aakash Gupta — news.aakashg.com'). Podcast excerpts are labelled 'Speaker (hh:mm:ss)' "
+        "and their links open at that moment; attribute each quote to the person who said it. "
+        "Quote people — never speak as them or role-play a host or guest — and never suggest a "
+        "guest endorses a product. "
         "Every search_newsletter result has a `confidence` with a level (High / Moderate / "
         "Limited coverage) and a best-match percentage. Tell the user the confidence in one "
         "short line, e.g. 'Confidence: High coverage (best match 71%)'. "
@@ -182,9 +187,12 @@ mcp = MCPServer(
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
-def _coverage_note(n_posts: int, library_updated: Optional[float] = None) -> str:
+def _coverage_note(n_posts: int, library_updated: Optional[float] = None, kind: str = "newsletter") -> str:
     if library_updated is not None:
         mins = max(1, round((time.time() - library_updated) / 60))
+        if kind == "podcast":
+            return (f"Searched full transcripts of all {n_posts} episodes (Cited's pre-built index, "
+                    f"refreshed {mins} min ago). Links open the episode at the quoted moment.")
         return (f"Searched the full archive of {n_posts} free posts (Cited's pre-built index, "
                 f"refreshed {mins} min ago). Paid-only posts are not included.")
     return (f"Searched {n_posts} public posts/episodes (Substack: up to {_fetcher.MAX_POSTS} "
@@ -206,10 +214,15 @@ async def _retrieve(url: str, query: str, top_k: int):
     Returns (n_posts, hits, coverage, library_updated_at_or_None)."""
     lib_key = _LIBRARY.resolve(url)
     if lib_key and _LIBRARY.ready(lib_key):
-        await _fetcher._check_url(_fetcher.upgrade_to_https(url))   # same URL rules as live fetches
+        # A library match is one of our configured sources, searched from the stored
+        # index — no network access, so no URL/DNS checks are needed here.
         hits, n = await asyncio.to_thread(_LIBRARY.search, lib_key, query, top_k)
         cov = _pipeline.coverage(hits)
         _recent_levels.append(cov["level"])
+        src = _LIBRARY.sources[lib_key]
+        if src.get("attribution"):
+            for h in hits:
+                h["attribution"] = src["attribution"]
         return n, hits, cov, _LIBRARY.updated_at(lib_key)
 
     posts = await _fetcher.get_posts(url)
@@ -359,7 +372,9 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
         result: dict = {
             "newsletter": url,
             "posts_indexed": n_posts,
-            "coverage_note": _coverage_note(n_posts, lib_updated),
+            "coverage_note": _coverage_note(
+                n_posts, lib_updated,
+                (_LIBRARY.sources.get(_LIBRARY.resolve(url) or "", {}) or {}).get("kind", "newsletter")),
             "confidence": _confidence_payload(cov),
             "low_confidence": cov["level"] == "low",
             "results": [
@@ -370,6 +385,7 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
                     "url":        h["url"],
                     "match_pct":  max(0, min(100, round(h["similarity"] * 100))),
                     "excerpt":    h["text"],
+                    **({"attribution": h["attribution"]} if h.get("attribution") else {}),
                 }
                 for i, h in enumerate(hits)
             ],
@@ -472,7 +488,8 @@ if _LIBRARY.enabled and _lib_sources:
                     {"rank": i + 1, "newsletter": h["source_name"], "title": h["title"],
                      "date": h["date"], "url": h["url"],
                      "match_pct": max(0, min(100, round(h["similarity"] * 100))),
-                     "excerpt": h["text"]}
+                     "excerpt": h["text"],
+                     **({"attribution": h["attribution"]} if h.get("attribution") else {})}
                     for i, h in enumerate(hits)],
             }
             if cov["level"] == "low":

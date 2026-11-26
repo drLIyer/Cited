@@ -60,6 +60,8 @@ class Index:
 
 
 def _post_hash(p) -> str:
+    if getattr(p, "meta", None) and p.meta.get("hash"):
+        return p.meta["hash"]                  # e.g. transcript index-entry fingerprint
     return hashlib.sha256(f"{p.title}\x00{p.date}\x00{p.text}".encode("utf-8", "replace")).hexdigest()[:24]
 
 
@@ -90,11 +92,19 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
             pending.append({"name": entry.get("name", "?"), "note": entry.get("note", "")})
             continue
         url = _clean_url(url)
+        if entry.get("type") == "transcripts":
+            bits = [b for b in urlsplit(url).path.split("/") if b][:2]
+            key = "gh:" + "/".join(bits).lower()          # one key per repository
+        else:
+            key = _fetcher.parse_subdomain(url)
         ready.append({"name": entry.get("name") or url, "url": url,
-                      "key": _fetcher.parse_subdomain(url),
+                      "key": key,
                       "aliases": [a for a in entry.get("aliases", []) if isinstance(a, str) and a.strip()],
                       # "granted": the writer gave Cited explicit permission → skip the AI opt-out check
-                      "permission": str(entry.get("permission") or "").lower() == "granted"})
+                      "permission": str(entry.get("permission") or "").lower() == "granted",
+                      **({"type": entry["type"]} if entry.get("type") else {}),
+                      **({"attribution": entry["attribution"]} if entry.get("attribution") else {}),
+                      **({"kind": entry["kind"]} if entry.get("kind") else {})})
     return ready, pending
 
 
@@ -113,7 +123,9 @@ class Library:
         self._errors: dict[str, str] = {}
         self._optout: dict[str, str] = {}      # key → reason the writer's site opted out of AI
         for s in self.sources.values():
-            if s.get("permission"):
+            # Permission applies to that newsletter's own site. Transcript repos don't go
+            # through the site-level check at all, so never exempt a whole host (github.com).
+            if s.get("permission") and s.get("type") != "transcripts":
                 host = (urlsplit(s["url"]).hostname or "").lower()
                 _fetcher.PERMITTED_HOSTS.add(host)
 
@@ -132,6 +144,8 @@ class Library:
             id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL, post_url TEXT NOT NULL,
             idx INTEGER NOT NULL, title TEXT, date TEXT, text TEXT NOT NULL, emb BLOB NOT NULL)""")
         c.execute("CREATE INDEX IF NOT EXISTS lib_chunks_key ON lib_chunks(key, post_url)")
+        if "link" not in {r[1] for r in c.execute("PRAGMA table_info(lib_chunks)")}:
+            c.execute("ALTER TABLE lib_chunks ADD COLUMN link TEXT")   # per-passage link (e.g. timestamp)
         return c
 
     def _source_row(self, key: str) -> Optional[sqlite3.Row]:
@@ -146,6 +160,11 @@ class Library:
         """Library key for a user-supplied URL (ignores 'www.' and any post path)."""
         if not self.enabled:
             return None
+        parts = urlsplit(_fetcher.upgrade_to_https(url))
+        if parts.hostname in ("github.com", "www.github.com"):
+            bits = [b for b in parts.path.split("/") if b][:2]
+            key = "gh:" + "/".join(bits).lower()
+            return key if key in self.sources else None
         try:
             key = _fetcher.parse_subdomain(_fetcher.upgrade_to_https(url))
         except _fetcher.NotSubstackError:
@@ -254,7 +273,8 @@ class Library:
             best = sorted((float(sims[i]) for i in vec[:3]), reverse=True)
             cov = _pipeline.coverage([{"similarity": s} for s in best])
             coverage.append({"source": key, "name": self.sources[key]["name"], "level": cov["level"],
-                             "best_match_pct": cov["percent"], "posts": idx.posts})
+                             "best_match_pct": cov["percent"], "posts": idx.posts,
+                             "kind": self.sources[key].get("kind", "newsletter")})
         cands.sort(key=lambda c: c[2], reverse=True)
         cands = cands[:pool]
         scores = _pipeline.rerank_scores(query, [self._index[k].chunks[i].text for k, i, _ in cands])
@@ -264,7 +284,9 @@ class Library:
             c = self._index[key].chunks[i]
             hits.append({"title": c.title, "url": c.url, "date": c.date, "text": c.text,
                          "score": float(score), "similarity": sim,
-                         "source": key, "source_name": self.sources[key]["name"]})
+                         "source": key, "source_name": self.sources[key]["name"],
+                         **({"attribution": self.sources[key]["attribution"]}
+                            if self.sources[key].get("attribution") else {})})
         order = {"high": 0, "medium": 1, "low": 2}
         coverage.sort(key=lambda c: (order[c["level"]], -c["best_match_pct"]))
         return hits, coverage
@@ -272,7 +294,7 @@ class Library:
     def catalog(self) -> list[dict]:
         """Library newsletters for users/Claude (name, URL, authors, size, state)."""
         st = {s["key"]: s for s in self.status().get("sources", [])}
-        return [{"name": src["name"], "url": src["url"],
+        return [{"name": src["name"], "url": src["url"], "kind": src.get("kind", "newsletter"),
                  "also_known_as": [a for a in src.get("aliases", []) if a != src["name"]],
                  "free_posts": st.get(key, {}).get("posts", 0),
                  "state": st.get(key, {}).get("state", "building")}
@@ -297,7 +319,7 @@ class Library:
         """(Re)build the in-memory index for a source from the database."""
         db = self._conn()
         try:
-            rows = db.execute("SELECT post_url, title, date, text, emb FROM lib_chunks WHERE key = ? "
+            rows = db.execute("SELECT post_url, link, title, date, text, emb FROM lib_chunks WHERE key = ? "
                               "ORDER BY date DESC, post_url, idx", (key,)).fetchall()
             n_posts = db.execute("SELECT COUNT(*) FROM lib_posts WHERE key = ?", (key,)).fetchone()[0]
         finally:
@@ -306,8 +328,8 @@ class Library:
             with self._lock:
                 self._index.pop(key, None)
             return
-        chunks = [_pipeline.Chunk(title=r["title"], url=r["post_url"], date=r["date"], text=r["text"])
-                  for r in rows]
+        chunks = [_pipeline.Chunk(title=r["title"], url=r["link"] or r["post_url"], date=r["date"],
+                                  text=r["text"]) for r in rows]
         embs = np.vstack([np.frombuffer(r["emb"], dtype=np.float16) for r in rows]).astype(np.float32)
         index = Index(chunks=chunks, embs=embs, bm25=_pipeline.build_bm25(chunks),
                       posts=n_posts, built_at=time.time())
@@ -354,11 +376,20 @@ class Library:
                     return {"key": key, "opted_out": decision.reason}
             self._optout.pop(key, None)
 
-            posts = await _fetcher.fetch_archive(src["url"], max_chars=self.max_chars,
-                                                 free_only=True, stop=stop, check_optout=False)
-            changed = [p for p in posts if known.get(p.url) != _post_hash(p)]
-            fetched_urls = {p.url for p in posts}
-            removed = (set(known) - fetched_urls) if (full and _fetcher._detect_source(src["url"]) == "substack") else set()
+            if src.get("type") == "transcripts":
+                # The index lists every episode: download only new/edited ones; anything
+                # no longer listed was removed upstream.
+                import transcripts as _tx
+                base, entries = await _tx.fetch_index(src["url"])
+                todo = [e for e in entries if known.get(_tx.entry_url(e)) != _tx.entry_hash(e)]
+                changed = await _tx.fetch_episodes(base, todo)
+                removed = set(known) - {_tx.entry_url(e) for e in entries}
+            else:
+                posts = await _fetcher.fetch_archive(src["url"], max_chars=self.max_chars,
+                                                     free_only=True, stop=stop, check_optout=False)
+                changed = [p for p in posts if known.get(p.url) != _post_hash(p)]
+                fetched_urls = {p.url for p in posts}
+                removed = (set(known) - fetched_urls) if (full and _fetcher._detect_source(src["url"]) == "substack") else set()
 
             result = await asyncio.to_thread(self._store, key, src, changed, removed, full, model_changed)
             await asyncio.to_thread(self.load_index, key)
@@ -395,7 +426,12 @@ class Library:
             db.close()
 
     def _store(self, key, src, changed, removed, full, model_changed) -> dict:
-        chunks = _pipeline.chunk_posts(changed)
+        if src.get("type") == "transcripts":
+            import transcripts as _tx
+            pairs = [(p.url, c) for p in changed for c in _tx.chunk_episode(p)]
+        else:
+            pairs = [(p.url, c) for p in changed for c in _pipeline.chunk_posts([p])]
+        chunks = [c for _, c in pairs]
         embs = _pipeline.embed_texts([c.text for c in chunks]) if chunks else np.zeros((0, 384), np.float32)
         now = time.time()
         db = self._conn()
@@ -414,12 +450,13 @@ class Library:
                                 audience=excluded.audience, hash=excluded.hash, fetched=excluded.fetched""",
                            (key, p.url, p.title, p.date, p.audience, _post_hash(p), now))
             per_post: dict[str, int] = {}
-            for c, e in zip(chunks, embs):
-                i = per_post.get(c.url, 0)
-                per_post[c.url] = i + 1
-                db.execute("INSERT INTO lib_chunks (key, post_url, idx, title, date, text, emb) "
-                           "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                           (key, c.url, i, c.title, c.date, c.text, e.astype(np.float16).tobytes()))
+            for (post_url, c), e in zip(pairs, embs):
+                i = per_post.get(post_url, 0)
+                per_post[post_url] = i + 1
+                db.execute("INSERT INTO lib_chunks (key, post_url, idx, title, date, text, emb, link) "
+                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                           (key, post_url, i, c.title, c.date, c.text, e.astype(np.float16).tobytes(),
+                            c.url if c.url != post_url else None))
             n_posts = db.execute("SELECT COUNT(*) FROM lib_posts WHERE key = ?", (key,)).fetchone()[0]
             n_chunks = db.execute("SELECT COUNT(*) FROM lib_chunks WHERE key = ?", (key,)).fetchone()[0]
             db.execute("""INSERT INTO lib_sources (key, url, name, model, last_refresh, last_full, last_ok,

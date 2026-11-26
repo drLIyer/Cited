@@ -65,12 +65,15 @@ def test_clean_url(raw, clean):
 def test_repo_library_json_is_valid():
     ready, pending = library.load_sources(library.DEFAULT_FILE)
     names = [s["name"] for s in ready] + [p["name"] for p in pending]
-    assert "Lenny's Newsletter" in names and len(names) == 11
+    assert "Lenny's Newsletter" in names and len(names) == 12
     urls = {s["name"]: s["url"] for s in ready}
     assert urls["Deborah Liu"] == "https://debliu.substack.com"
     assert urls["The Skip (Nikhyl Singhal)"] == "https://theskip.substack.com"
     assert urls["The Beautiful Mess (John Cutler)"] == "https://cutlefish.substack.com"
     assert urls["SVPG (Marty Cagan)"] == "https://www.svpg.com/articles"
+    gp = next(s for s in ready if s["name"] == "The Growth Podcast (Aakash Gupta)")
+    assert gp["key"] == "gh:aakashg/growth-podcast-transcripts" and gp["type"] == "transcripts"
+    assert gp["permission"] and gp["attribution"]["url"] == "https://www.news.aakashg.com"
     assert urls["Mind the Product"] == "https://www.mindtheproduct.com"
     assert all(s["url"].startswith("https://") for s in ready)
 

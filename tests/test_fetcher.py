@@ -331,3 +331,23 @@ async def test_pinned_tls_still_verifies_hostname(monkeypatch):
         async with client() as c:
             with pytest.raises(httpx.ConnectError, match="(?i)certificate|hostname"):
                 await c.get(f"https://wrong.example:{port}/")
+
+
+async def test_compressed_responses_are_decoded_once(mock_http):
+    """Regression: real servers gzip responses; the rebuilt response must not decode twice."""
+    import gzip
+    body = _rss([("A", "https://x/a", "", LONG)])
+    mock_http["https://feeds.example/f.xml"] = httpx.Response(
+        200, content=gzip.compress(body), headers={"content-encoding": "gzip"})
+    posts = await fetcher.get_posts("https://feeds.example/f.xml")
+    assert len(posts) == 1 and "pricing strategy" in posts[0].text
+
+
+async def test_compressed_json_api(mock_http):
+    import gzip, json as _json
+    payload = {"posts": [_sub_post(1)]}
+    mock_http["https://good.substack.com/api/v1/posts?limit=25"] = httpx.Response(
+        200, content=gzip.compress(_json.dumps(payload).encode()),
+        headers={"content-encoding": "gzip", "content-type": "application/json"})
+    posts = await fetcher.get_posts("https://good.substack.com")
+    assert len(posts) == 1

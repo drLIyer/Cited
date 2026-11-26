@@ -20,6 +20,26 @@
       ]
     },
     {
+      "name": "The Growth Podcast (Aakash Gupta)",
+      "type": "transcripts",
+      "kind": "podcast",
+      "url": "https://github.com/aakashg/growth-podcast-transcripts",
+      "permission": "granted",
+      "license_note": "Transcript licence allows building products, quoting passages and agents that answer from them with citations; requires naming the show and linking news.aakashg.com; forbids re-hosting the raw files, implying guest endorsement, or imitating the host or guests.",
+      "attribution": {
+        "text": "The Growth Podcast with Aakash Gupta",
+        "url": "https://www.news.aakashg.com"
+      },
+      "aliases": [
+        "The Growth Podcast",
+        "Growth Podcast",
+        "Product Growth Podcast",
+        "Aakash Gupta",
+        "Aakash",
+        "Aakash's podcast"
+      ]
+    },
+    {
       "name": "Ami Vora",
       "url": "https://amivora.substack.com",
       "aliases": [
