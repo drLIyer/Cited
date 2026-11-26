@@ -3,16 +3,16 @@ builder = "nixpacks"
 
 [deploy]
 startCommand = "python server.py"
-healthcheckPath = "/health"
-healthcheckTimeout = 30
+healthcheckPath = "/health/ready"
+healthcheckTimeout = 300  # first boot downloads + loads the search models
 restartPolicyType = "on_failure"
 
 # Required env vars to set in Railway dashboard:
 #   CITED_TRANSPORT = http
 #   CITED_ADMIN_TOKEN = <strong-secret>   (for admin_get_history)
 #
-# ANTHROPIC_API_KEY is NOT needed — ask_substack is disabled in HTTP mode.
-# Claude in the user's chat synthesizes from search_substack excerpts instead,
+# ANTHROPIC_API_KEY is NOT needed — ask_newsletter is disabled in HTTP mode.
+# Claude in the user's chat synthesizes from search_newsletter excerpts instead,
 # so remote users never touch your API credits.
 
 [[services]]

@@ -1,0 +1,143 @@
+{
+  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters. Sites whose writers opted out of AI (robots.txt, noai, TDM reservation) are skipped automatically; add \"permission\": \"granted\" only if the writer has given you permission directly. Entries with \"type\": \"mcp\" are paid-subscription sources: they're searched only for users who add their own member key to their Cited connector (request header named in key_header).",
+  "sources": [
+    {
+      "name": "Lenny's Newsletter",
+      "url": "https://www.lennysnewsletter.com",
+      "aliases": [
+        "Lenny Rachitsky",
+        "Lenny",
+        "Lenny's"
+      ]
+    },
+    {
+      "name": "Product Growth (Aakash Gupta)",
+      "url": "https://www.news.aakashg.com",
+      "aliases": [
+        "Aakash Gupta",
+        "Aakash",
+        "Product Growth"
+      ]
+    },
+    {
+      "name": "The Growth Podcast (Aakash Gupta)",
+      "type": "transcripts",
+      "kind": "podcast",
+      "url": "https://github.com/aakashg/growth-podcast-transcripts",
+      "permission": "granted",
+      "license_note": "Transcript licence allows building products, quoting passages and agents that answer from them with citations; requires naming the show and linking news.aakashg.com; forbids re-hosting the raw files, implying guest endorsement, or imitating the host or guests.",
+      "attribution": {
+        "text": "The Growth Podcast with Aakash Gupta",
+        "url": "https://www.news.aakashg.com"
+      },
+      "aliases": [
+        "The Growth Podcast",
+        "Growth Podcast",
+        "Product Growth Podcast",
+        "Aakash Gupta",
+        "Aakash",
+        "Aakash's podcast"
+      ]
+    },
+    {
+      "name": "The Growth Podcast — members MCP (Aakash Gupta)",
+      "type": "mcp",
+      "kind": "podcast",
+      "mcp_url": "https://growth-podcast-mcp.aakashg.workers.dev/mcp",
+      "key_header": "X-Cited-Key-Growth-Podcast",
+      "key_env": "CITED_KEY_GROWTH_PODCAST",
+      "auth": {
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "homepage": "https://www.news.aakashg.com",
+      "note": "Paid Product Growth members get a key at bundle.aakashg.com. Searched only with the user's own key, per request; never stored.",
+      "attribution": {
+        "text": "The Growth Podcast with Aakash Gupta",
+        "url": "https://www.news.aakashg.com"
+      },
+      "aliases": [
+        "Growth Podcast members",
+        "Growth Podcast MCP",
+        "Aakash members"
+      ]
+    },
+    {
+      "name": "Ami Vora",
+      "url": "https://amivora.substack.com",
+      "aliases": [
+        "Ami Vora"
+      ]
+    },
+    {
+      "name": "Deborah Liu",
+      "url": "https://debliu.substack.com",
+      "aliases": [
+        "Deborah Liu",
+        "Deb Liu"
+      ]
+    },
+    {
+      "name": "a16z",
+      "url": null,
+      "note": "Which a16z newsletter/feed? Not confirmed yet",
+      "aliases": [
+        "a16z",
+        "Andreessen Horowitz"
+      ]
+    },
+    {
+      "name": "The Product Compass (Pawel Huryn)",
+      "url": "https://www.productcompass.pm",
+      "aliases": [
+        "Pawel Huryn",
+        "Paweł Huryn",
+        "Product Compass"
+      ]
+    },
+    {
+      "name": "Product Talk (Teresa Torres)",
+      "url": "https://www.producttalk.org",
+      "aliases": [
+        "Teresa Torres",
+        "Product Talk"
+      ]
+    },
+    {
+      "name": "The Skip (Nikhyl Singhal)",
+      "url": "https://theskip.substack.com",
+      "aliases": [
+        "Nikhyl Singhal",
+        "Nikhyl",
+        "The Skip"
+      ]
+    },
+    {
+      "name": "The Beautiful Mess (John Cutler)",
+      "url": "https://cutlefish.substack.com",
+      "aliases": [
+        "John Cutler",
+        "Beautiful Mess",
+        "Cutlefish"
+      ]
+    },
+    {
+      "name": "SVPG (Marty Cagan)",
+      "url": "https://www.svpg.com/articles/?utm_source=chatgpt.com",
+      "aliases": [
+        "Marty Cagan",
+        "Cagan",
+        "SVPG",
+        "Silicon Valley Product Group"
+      ]
+    },
+    {
+      "name": "Mind the Product",
+      "url": "https://www.mindtheproduct.com/?utm_source=chatgpt.com",
+      "aliases": [
+        "Mind the Product",
+        "MTP"
+      ]
+    }
+  ]
+}

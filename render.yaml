@@ -4,13 +4,27 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: python server.py
-    healthCheckPath: /health
+    healthCheckPath: /health/ready
     envVars:
       - key: CITED_TRANSPORT
         value: http
       - key: CITED_ADMIN_TOKEN
         sync: false   # set manually — enables admin_get_history tool
-      # ANTHROPIC_API_KEY is NOT required. ask_substack is disabled in HTTP mode;
-      # Claude in the user's chat handles synthesis from search_substack excerpts.
+      # ANTHROPIC_API_KEY is NOT required. ask_newsletter is disabled in HTTP mode;
+      # Claude in the user's chat handles synthesis from search_newsletter excerpts.
+      - key: CITED_PUBLIC_URL
+        value: https://cited-7bys.onrender.com
+      # Persistent data: attach a Render disk (e.g. mounted at /var/data) and set
+      # CITED_HISTORY_DB=/var/data/cited.db so history, the error log and the
+      # auto-fix playbook survive deploys.
+      - key: CITED_HISTORY_DB
+        sync: false
+      # Daily digest (set the values in the Render dashboard, never in this file)
+      - key: CITED_DIGEST_TO
+        sync: false
+      - key: CITED_DIGEST_FROM
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
       - key: PORT
         generateValue: false

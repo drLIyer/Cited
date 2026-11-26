@@ -1,7 +1,9 @@
 mcp>=2.0.0
-httpx>=0.27.0
+httpx>=0.27.0,<0.29  # fetcher pins DNS via httpcore internals; re-test before bumping
+httpcore>=1.0,<2
 sentence-transformers>=3.0.0
 rank-bm25==0.2.2
 numpy>=1.26.0
 anthropic>=0.40.0
 uvicorn>=0.30.0
+defusedxml>=0.7.1

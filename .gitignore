@@ -2,3 +2,7 @@
 __pycache__/
 *.pyc
 .env
+history.db
+*.db-journal
+.pytest_cache/
+library.db

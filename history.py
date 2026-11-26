@@ -1,7 +1,7 @@
 """
 Persistent Q&A history for Cited — two layers:
 
-  1. SQLite (~/cited/history.db)
+  1. SQLite (history.db next to this file, or $CITED_HISTORY_DB)
      Full Q&A, sources, confidence, timestamps. Survives restarts.
      Queryable by newsletter URL or keyword.
 
@@ -19,7 +19,11 @@ from typing import Optional
 # ── Paths ──────────────────────────────────────────────────────────────────────
 
 _HERE    = Path(__file__).parent
-DB_PATH  = _HERE / "history.db"
+DB_PATH  = Path(os.getenv("CITED_HISTORY_DB", str(_HERE / "history.db")))
+
+# Entries older than this are deleted automatically (enforces the retention
+# period promised in PRIVACY.md). 0 disables pruning.
+RETENTION_DAYS = int(os.getenv("CITED_HISTORY_RETENTION_DAYS", "90"))
 
 # Claude auto-memory: ~/.claude/projects/<home-slug>/memory/
 # Slug = home path with / replaced by -  (e.g. /Users/liyer_1 → -Users-liyer-1)
@@ -51,26 +55,38 @@ def _conn() -> sqlite3.Connection:
             tool       TEXT
         )
     """)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(history)")}
+    if "level" not in cols:   # added with ThinkWithMe-style coverage levels
+        c.execute("ALTER TABLE history ADD COLUMN level TEXT")
     c.commit()
     return c
 
 
 def save(url: str, question: str, answer: str,
-         sources: list, confidence: float, tool: str = "search") -> int:
-    """Save a Q&A. Returns the new row id."""
+         sources: list, confidence: float, tool: str = "search",
+         update_memory: bool = True, level: Optional[str] = None) -> int:
+    """Save a Q&A. Returns the new row id.
+
+    update_memory=False skips the Claude memory file (used in hosted HTTP mode,
+    where writing into the server's ~/.claude makes no sense).
+    """
     subdomain = _subdomain(url)
     db = _conn()
     cur = db.execute(
         """INSERT INTO history
-             (ts, url, subdomain, question, answer, sources, confidence, tool)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+             (ts, url, subdomain, question, answer, sources, confidence, tool, level)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (time.time(), url, subdomain, question, answer,
-         json.dumps(sources), round(confidence, 3), tool),
+         json.dumps(sources), round(confidence, 3), tool, level),
     )
     row_id = cur.lastrowid
+    if RETENTION_DAYS > 0:
+        db.execute("DELETE FROM history WHERE ts < ?",
+                   (time.time() - RETENTION_DAYS * 86400,))
     db.commit()
     db.close()
-    _update_memory(subdomain, question)
+    if update_memory:
+        _update_memory(subdomain, question)
     return row_id
 
 
@@ -93,10 +109,11 @@ def get(url: Optional[str] = None, limit: int = 20) -> list[dict]:
 def keyword_search(query: str, limit: int = 10) -> list[dict]:
     """Simple keyword search across questions and answers."""
     db   = _conn()
-    like = f"%{query}%"
+    esc  = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    like = f"%{esc}%"
     rows = db.execute(
         """SELECT * FROM history
-           WHERE question LIKE ? OR answer LIKE ?
+           WHERE question LIKE ? ESCAPE '\\' OR answer LIKE ? ESCAPE '\\'
            ORDER BY ts DESC LIMIT ?""",
         (like, like, limit),
     ).fetchall()
@@ -114,8 +131,18 @@ def _subdomain(url: str) -> str:
         return url.rstrip("/")
 
 
+def label(subdomain: str) -> str:
+    """Display label for a stored newsletter key (adds .substack.com only for bare subdomains)."""
+    try:
+        from fetcher import display_name
+        return display_name(subdomain)
+    except Exception:
+        return subdomain
+
+
 def _to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
+    d["label"]   = label(d["subdomain"])
     d["sources"] = json.loads(d.get("sources") or "[]")
     d["date"]    = time.strftime("%Y-%m-%d", time.localtime(d["ts"]))
     return d
@@ -149,7 +176,7 @@ def _update_memory(subdomain: str, question: str) -> None:
         entry = f"- {date}: {topic}"
 
         content = MEMORY_FILE.read_text() if MEMORY_FILE.exists() else _MEMORY_TEMPLATE
-        header  = f"### {subdomain}.substack.com"
+        header  = f"### {label(subdomain)}"
 
         if header in content:
             # Avoid duplicate entries for the same topic on the same day
@@ -173,3 +200,78 @@ def _ensure_index() -> None:
     line  = "- [Cited History](cited_history.md) — Newsletters researched via Cited and questions asked"
     if "cited_history.md" not in idx:
         MEMORY_INDEX.write_text(idx.rstrip() + f"\n{line}\n")
+
+
+def check_writable() -> None:
+    """Raise if the history DB can't be opened and written (used by health checks)."""
+    db = _conn()
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.rollback()
+    finally:
+        db.close()
+
+
+# ── Dashboard statistics ──────────────────────────────────────────────────────
+
+_LEVEL_SUMS = """SUM(CASE WHEN level = 'high'   THEN 1 ELSE 0 END) AS high,
+                  SUM(CASE WHEN level = 'medium' THEN 1 ELSE 0 END) AS medium,
+                  SUM(CASE WHEN level = 'low'    THEN 1 ELSE 0 END) AS low"""
+
+
+def stats(hours: float = 24) -> dict:
+    """Search volume and coverage (confidence) statistics for the admin dashboard.
+
+    `avg_confidence` is the average best-match similarity (0–1); levels use the
+    ThinkWithMe/Distill limits recorded at search time.
+    """
+    since = time.time() - hours * 3600
+    db = _conn()
+    try:
+        row = db.execute(
+            f"""SELECT COUNT(*) AS n, AVG(confidence) AS avg_conf, {_LEVEL_SUMS}
+                FROM history WHERE ts >= ? AND tool = 'search'""", (since,)).fetchone()
+        per_source = db.execute(
+            f"""SELECT subdomain, COUNT(*) AS n, AVG(confidence) AS avg_conf, {_LEVEL_SUMS}
+                FROM history WHERE ts >= ? AND tool = 'search'
+                GROUP BY subdomain ORDER BY n DESC LIMIT 20""", (since,)).fetchall()
+        hourly = db.execute(
+            """SELECT CAST((ts - ?) / 3600 AS INTEGER) AS bucket, COUNT(*) AS n,
+                      SUM(CASE WHEN level = 'low' THEN 1 ELSE 0 END) AS low
+               FROM history WHERE ts >= ? AND tool = 'search'
+               GROUP BY bucket ORDER BY bucket""", (since, since)).fetchall()
+    finally:
+        db.close()
+    n = row["n"] or 0
+    return {
+        "hours": hours,
+        "searches": n,
+        "avg_confidence": round(row["avg_conf"], 3) if row["avg_conf"] is not None else None,
+        "levels": {"high": row["high"] or 0, "medium": row["medium"] or 0, "low": row["low"] or 0},
+        "low_confidence": row["low"] or 0,
+        "low_confidence_pct": round((row["low"] or 0) / n * 100, 1) if n else 0.0,
+        "by_source": [
+            {"source": r["subdomain"], "label": label(r["subdomain"]), "searches": r["n"],
+             "avg_confidence": round(r["avg_conf"], 3) if r["avg_conf"] is not None else None,
+             "levels": {"high": r["high"] or 0, "medium": r["medium"] or 0, "low": r["low"] or 0},
+             "low_confidence": r["low"] or 0}
+            for r in per_source
+        ],
+        "hourly": [{"hours_ago": round(hours - r["bucket"] - 1), "searches": r["n"],
+                    "low_confidence": r["low"] or 0} for r in hourly],
+    }
+
+
+def recent(limit: int = 50, level: Optional[str] = None) -> list[dict]:
+    """Most recent searches, optionally only those at one coverage level (e.g. 'low')."""
+    db = _conn()
+    try:
+        if level:
+            rows = db.execute(
+                "SELECT * FROM history WHERE level = ? ORDER BY ts DESC LIMIT ?",
+                (level, limit)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM history ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+    finally:
+        db.close()
+    return [_to_dict(r) for r in rows]

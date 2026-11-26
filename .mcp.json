@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "cited": {
+      "type": "http",
+      "url": "https://cited-7bys.onrender.com/mcp"
+    }
+  }
+}
