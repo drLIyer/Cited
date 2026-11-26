@@ -78,6 +78,15 @@ def _clean_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, path, query, ""))
 
 
+def load_raw(path: Optional[Path] = None) -> list[dict]:
+    """All entries in library.json (including "type": "mcp" subscription sources)."""
+    path = Path(os.getenv("CITED_LIBRARY_FILE") or path or DEFAULT_FILE)
+    try:
+        return [e for e in json.loads(path.read_text()).get("sources", []) if isinstance(e, dict)]
+    except FileNotFoundError:
+        return []
+
+
 def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
     """Return (sources with URLs, entries still waiting for a URL)."""
     path = Path(os.getenv("CITED_LIBRARY_FILE") or path or DEFAULT_FILE)
@@ -87,6 +96,8 @@ def load_sources(path: Optional[Path] = None) -> tuple[list[dict], list[dict]]:
         return [], []
     ready, pending = [], []
     for entry in raw.get("sources", []):
+        if entry.get("type") == "mcp":
+            continue                      # subscription sources: see subscriptions.py / load_raw()
         url = (entry.get("url") or "").strip()
         if not url:
             pending.append({"name": entry.get("name", "?"), "note": entry.get("note", "")})

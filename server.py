@@ -48,6 +48,7 @@ import asyncio
 import hmac
 import json
 import logging
+import re
 import os
 import sys
 import threading
@@ -75,6 +76,7 @@ import healer as _healer_mod
 import digest as _digest
 import metrics as _metrics
 import library as _library_mod
+import subscriptions as _subs_mod
 from ratelimit import ClientRateLimit
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr,
@@ -119,6 +121,10 @@ _LIBRARY = _library_mod.Library(
     sources=_lib_sources, pending=_lib_pending,
     max_chars=int(os.getenv("CITED_LIBRARY_POST_CHARS", "60000")),
 )
+# Paid-subscription sources searched with the user's own key ("type": "mcp" in library.json).
+_SUBS = _subs_mod.load([e for e in _library_mod.load_raw() if e.get("type") == "mcp"])
+_SUBS_LOCAL = (not _HTTP_MODE) and any(_subs_mod.user_key(s, {}, True) for s in _SUBS)
+
 _LIBRARY_NOTE = (
     "## The Cited library\n"
     "Full archives of free posts are pre-indexed (fast, complete) for: "
@@ -130,8 +136,11 @@ _LIBRARY_NOTE = (
     "`newsletters` to restrict it; otherwise it routes by the names in the question, or searches "
     "the whole library. It reports which newsletters cover the topic best — tell the user.\n"
     "- A specific newsletter or feed URL that is not in the library → call search_newsletter.\n"
-    "- 'Which newsletters can you search?' → call list_library.\n\n"
-) if _LIBRARY.enabled and _lib_sources else ""
+    "- 'Which newsletters can you search?' → call list_library.\n"
+    "- Paid subscriptions: if the user has connected a creator's members-only server to Cited "
+    "(list_library shows which are connected and how), search_library includes it automatically; "
+    "those results are marked via_subscription and the question is sent to that creator's server.\n\n"
+) if (_LIBRARY.enabled and _lib_sources) or _SUBS else ""
 
 mcp = MCPServer(
     "Cited",
@@ -416,9 +425,71 @@ async def search_newsletter(url: str, query: str, top_k: int = 5,
         return json.dumps({"error": f"Unexpected error: {exc}"})
 
 
-# ── Library tools (hosted mode with a library) ─────────────────────────────────
+# ── Library tools (hosted mode with a library, or connected subscriptions) ─────
 
-if _LIBRARY.enabled and _lib_sources:
+def _request_headers(ctx: Optional[Context]) -> dict:
+    try:
+        req = ctx.request_context.request if ctx is not None else None
+    except Exception:
+        req = None
+    return dict(req.headers) if req is not None and getattr(req, "headers", None) is not None else {}
+
+
+def _sub_names(sub: dict) -> list[str]:
+    base = re.sub(r"\s*\(.*?\)\s*", " ", sub["name"]).strip()
+    return [n for n in dict.fromkeys([sub["name"], base, *sub.get("aliases", [])]) if n]
+
+
+def _sub_matches(sub: dict, item: str) -> bool:
+    item = str(item).strip().lower()
+    return bool(item) and any(item == n.lower() for n in _sub_names(sub))
+
+
+def _route_subs(question: str, requested: Optional[list[str]], active: list[dict]) -> list[dict]:
+    """Which connected subscriptions to include: requested → those; named in the
+    question → those; nothing named at all → every connected subscription."""
+    if requested:
+        return [s for s in active if any(_sub_matches(s, r) for r in requested)]
+    named = [s for s in active if any(re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", question, re.I)
+                                      for n in _sub_names(s))]
+    if named:
+        return named
+    return [] if (_LIBRARY.enabled and _LIBRARY.mentioned_in(question)) else active
+
+
+async def _search_subscriptions(subs: list[dict], headers: dict, question: str):
+    """Search each subscription with the user's key → (hits, coverage rows, errors)."""
+    hits, coverage, errors = [], [], []
+    for sub in subs:
+        key = _subs_mod.user_key(sub, headers, not _HTTP_MODE)
+        try:
+            passages = await _subs_mod.search(sub, key, question)
+        except _subs_mod.SubscriptionError as exc:
+            errors.append(str(exc))
+            continue
+        except Exception as exc:          # never let one creator's server break the search
+            errors.append(f"{sub['name']}: unexpected error ({type(exc).__name__})")
+            continue
+        if not passages:
+            continue
+
+        def score(ps=passages):
+            q = _pipeline.embed_texts([question])[0]
+            sims = _pipeline.embed_texts([p["text"] for p in ps]) @ q
+            return [float(x) for x in sims], _pipeline.rerank_scores(question, [p["text"] for p in ps])
+
+        sims, scores = await asyncio.to_thread(score)
+        for p, sim, sc in zip(passages, sims, scores):
+            hits.append({**p, "score": sc, "similarity": sim, "source": sub["key"],
+                         "source_name": sub["name"], "via_subscription": True,
+                         **({"attribution": sub["attribution"]} if sub.get("attribution") else {})})
+        cov = _pipeline.coverage([{"similarity": x} for x in sorted(sims, reverse=True)[:3]])
+        coverage.append({"source": sub["key"], "name": sub["name"], "level": cov["level"],
+                         "best_match_pct": cov["percent"], "posts": None, "kind": sub.get("kind", "newsletter")})
+    return hits, coverage, errors
+
+
+if (_LIBRARY.enabled and _lib_sources) or (_HTTP_MODE and _SUBS) or _SUBS_LOCAL:
 
     @mcp.tool(title="Search the Cited library",
               annotations=_read_only("Search the Cited library"))
@@ -449,8 +520,22 @@ if _LIBRARY.enabled and _lib_sources:
         if isinstance(newsletters, str):
             newsletters = [newsletters]
         try:
-            route = _LIBRARY.route(question, newsletters)
-            if not route["keys"]:
+            headers = _request_headers(ctx)
+            active = [sb for sb in _SUBS if _subs_mod.user_key(sb, headers, not _HTTP_MODE)]
+            subs = _route_subs(question, newsletters, active)
+            route = (_LIBRARY.route(question, newsletters) if _LIBRARY.enabled else
+                     {"keys": [], "reason": "", "not_found": list(newsletters or []),
+                      "not_ready": [], "opted_out": []})
+            route["not_found"] = [x for x in route["not_found"]
+                                  if not any(_sub_matches(sb, x) for sb in _SUBS)]
+            # If the question names only subscription sources, don't also fall back to
+            # searching the whole library.
+            names_a_sub = not newsletters and any(
+                re.search(rf"(?<![\w]){re.escape(n)}(?![\w])", question, re.I)
+                for sb in subs for n in _sub_names(sb))
+            if names_a_sub and not (_LIBRARY.enabled and _LIBRARY.mentioned_in(question)):
+                route["keys"] = []
+            if not route["keys"] and not subs:
                 if route.get("opted_out") and not route["not_ready"]:
                     problem = (", ".join(route["opted_out"]) + " opted out of AI tools, so Cited doesn't "
                                "index them. Please read them directly on their sites.")
@@ -463,10 +548,21 @@ if _LIBRARY.enabled and _lib_sources:
                 return json.dumps({"error": problem, "routing": route | {"keys": []},
                                    "library": [c["name"] for c in _LIBRARY.catalog()]})
 
-            hits, per_source = await asyncio.to_thread(_LIBRARY.search_many, route["keys"], question, top_k)
+            hits, per_source = (await asyncio.to_thread(_LIBRARY.search_many, route["keys"], question, top_k)
+                                if route["keys"] else ([], []))
+            sub_hits, sub_cov, sub_errors = await _search_subscriptions(subs, headers, question)
+            if sub_hits:
+                hits = sorted(hits + sub_hits, key=lambda h: h["score"], reverse=True)[:top_k]
+                order = {"high": 0, "medium": 1, "low": 2}
+                per_source = sorted(per_source + sub_cov, key=lambda c: (order[c["level"]], -c["best_match_pct"]))
+            if subs:
+                route["reason"] = (route["reason"] + " " if route["keys"] else "") + (
+                    "Also searched your connected subscription(s): " if route["keys"] else
+                    "Searched your connected subscription(s): ") + ", ".join(sb["name"] for sb in subs) + \
+                    " — your question was sent to their server using your key."
             cov = _pipeline.coverage(hits)
             _recent_levels.append(cov["level"])
-            names = [_LIBRARY.sources[k]["name"] for k in route["keys"]]
+            names = [_LIBRARY.sources[k]["name"] for k in route["keys"]] + [sb["name"] for sb in subs]
             strong = [c["name"] for c in per_source if c["level"] in ("high", "medium")]
             result: dict = {
                 "routing": {
@@ -476,20 +572,23 @@ if _LIBRARY.enabled and _lib_sources:
                     **({"not_in_library": route["not_found"]} if route["not_found"] else {}),
                     **({"still_building": route["not_ready"]} if route["not_ready"] else {}),
                     **({"opted_out_of_ai": route["opted_out"]} if route.get("opted_out") else {}),
+                    **({"subscription_errors": sub_errors} if sub_errors else {}),
                 },
                 "confidence": _confidence_payload(cov),
                 "low_confidence": cov["level"] == "low",
                 "coverage_by_newsletter": [
                     {"newsletter": c["name"], "coverage": {"high": "High", "medium": "Moderate",
                                                            "low": "Limited"}[c["level"]],
-                     "best_match_pct": c["best_match_pct"], "free_posts": c["posts"]}
+                     "best_match_pct": c["best_match_pct"], "free_posts": c["posts"],
+                     **({"via_subscription": True} if str(c["source"]).startswith("sub:") else {})}
                     for c in per_source],
                 "results": [
                     {"rank": i + 1, "newsletter": h["source_name"], "title": h["title"],
                      "date": h["date"], "url": h["url"],
                      "match_pct": max(0, min(100, round(h["similarity"] * 100))),
                      "excerpt": h["text"],
-                     **({"attribution": h["attribution"]} if h.get("attribution") else {})}
+                     **({"attribution": h["attribution"]} if h.get("attribution") else {}),
+                     **({"via_subscription": True} if h.get("via_subscription") else {})}
                     for i, h in enumerate(hits)],
             }
             if cov["level"] == "low":
@@ -509,13 +608,22 @@ if _LIBRARY.enabled and _lib_sources:
 
     @mcp.tool(title="List the Cited library",
               annotations=_read_only("List the Cited library", open_world=False))
-    async def list_library() -> str:
+    async def list_library(ctx: Optional[Context] = None) -> str:
         """
         List the newsletters in Cited's library — the ones with full archives pre-indexed
         that search_library can search — with their URLs, authors and how many free posts
-        are indexed.
+        are indexed. Also lists paid-subscription sources, whether the user has connected
+        them, and how to connect one.
         """
-        return json.dumps({"newsletters": await asyncio.to_thread(_LIBRARY.catalog)}, indent=2)
+        headers = _request_headers(ctx)
+        catalog = await asyncio.to_thread(_LIBRARY.catalog) if _LIBRARY.enabled else []
+        subs = [{
+            "name": sb["name"],
+            "connected": bool(_subs_mod.user_key(sb, headers, not _HTTP_MODE)),
+            "how_to_connect": (f"Add a request header to your Cited connector: {sb['key_header']}: <your member key>"
+                               if _HTTP_MODE else f"Set the environment variable {sb.get('key_env')} to your member key"),
+        } for sb in _SUBS]
+        return json.dumps({"newsletters": catalog, **({"subscriptions": subs} if subs else {})}, indent=2)
 
 
 # ── Tool 2: list_posts ─────────────────────────────────────────────────────────

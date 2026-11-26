@@ -66,6 +66,13 @@ The server runs a background health check every 60 s (`CITED_HEALTH_MONITOR_SECO
 
 **Podcasts from transcript repositories.** Library entries with `"type": "transcripts"` read a GitHub repository of episode transcripts in the Growth Podcast format (`index.json` + `episodes/*.md` with `**Speaker** (hh:mm:ss)` turns). Passages keep who spoke and link to the exact moment on YouTube; sponsor reads are skipped (repo-marked turns, plus an ad scrubber for unmarked reads). Refreshes read only the index and download just new or edited episodes. An `attribution` block is shown with every quote. *The Growth Podcast with Aakash Gupta* (166 episodes) is included under its transcript licence, which permits agents that answer from the transcripts with citations; Cited quotes guests and never speaks as them.
 
+**Bring your subscription.** Paid members of a creator's own MCP server (e.g. *The Growth Podcast* members MCP) can have Cited search it alongside the library, with their own key:
+- claude.ai: Customize → Connectors → Cited → **Request headers** → `X-Cited-Key-Growth-Podcast: <your member key>`
+- Claude Code: `claude mcp add --transport http cited https://cited-7bys.onrender.com/mcp --header "X-Cited-Key-Growth-Podcast: <your member key>"`
+- Local mode: `CITED_KEY_GROWTH_PODCAST=<key>`
+
+The key is used for that request only and never stored or logged; the question is sent to the creator's server, and results are marked `via_subscription`. Subscription sources are `"type": "mcp"` entries in `library.json` (server URL, header name, auth scheme; the search tool is detected automatically).
+
 Non-Substack sites work too: Cited finds the site's RSS/Atom feed automatically and, for WordPress-style feeds, pages back through `?paged=2, 3, …` to collect the full archive. Add a newsletter by adding its URL to `library.json` and redeploying.
 
 **Auto-fix agent.** After each health check, the agent looks at new errors and applies *safe* fixes only — reload the search models, clear one feed's cache, pause a failing feed for 15 min, free memory, or block an attacking IP for 60 min. It never changes code. It checks whether each fix worked, remembers the ones that did, and re-applies them immediately if the same error returns. Every action has an hourly cap and appears on the dashboard; a fix that didn't work is flagged for you.

@@ -1,5 +1,5 @@
 {
-  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters. Sites whose writers opted out of AI (robots.txt, noai, TDM reservation) are skipped automatically; add \"permission\": \"granted\" only if the writer has given you permission directly.",
+  "_comment": "Newsletters Cited keeps a permanent, full-archive index of (free posts only). Add a source by giving its URL; entries without a URL are shown on the admin dashboard as 'needs URL' and are not indexed. 'aliases' are names users might say (author, publication) — used to route questions to the right newsletters. Sites whose writers opted out of AI (robots.txt, noai, TDM reservation) are skipped automatically; add \"permission\": \"granted\" only if the writer has given you permission directly. Entries with \"type\": \"mcp\" are paid-subscription sources: they're searched only for users who add their own member key to their Cited connector (request header named in key_header).",
   "sources": [
     {
       "name": "Lenny's Newsletter",
@@ -37,6 +37,29 @@
         "Aakash Gupta",
         "Aakash",
         "Aakash's podcast"
+      ]
+    },
+    {
+      "name": "The Growth Podcast — members MCP (Aakash Gupta)",
+      "type": "mcp",
+      "kind": "podcast",
+      "mcp_url": "https://growth-podcast-mcp.aakashg.workers.dev/mcp",
+      "key_header": "X-Cited-Key-Growth-Podcast",
+      "key_env": "CITED_KEY_GROWTH_PODCAST",
+      "auth": {
+        "header": "Authorization",
+        "scheme": "Bearer"
+      },
+      "homepage": "https://www.news.aakashg.com",
+      "note": "Paid Product Growth members get a key at bundle.aakashg.com. Searched only with the user's own key, per request; never stored.",
+      "attribution": {
+        "text": "The Growth Podcast with Aakash Gupta",
+        "url": "https://www.news.aakashg.com"
+      },
+      "aliases": [
+        "Growth Podcast members",
+        "Growth Podcast MCP",
+        "Aakash members"
       ]
     },
     {
